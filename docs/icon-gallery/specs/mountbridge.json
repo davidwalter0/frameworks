@@ -1,0 +1,22 @@
+{
+  "name": "mountbridge",
+  "palette": {
+    "preset": "slate"
+  },
+  "motif": {
+    "color": "hero",
+    "opacity": 0.9,
+    "svg": "<path d=\"M 44 74 h 44 l 14 16 h 66 a 14 14 0 0 1 14 14 v 62 a 14 14 0 0 1 -14 14 h -124 a 14 14 0 0 1 -14 -14 v -78 a 14 14 0 0 1 14 -14 z\" stroke=\"none\" opacity=\"0.55\"/><g fill=\"none\" stroke-width=\"6\" stroke-linecap=\"round\"><path d=\"M 100 150 L 68 122\"/><path d=\"M 100 150 L 132 122\"/><path d=\"M 100 150 L 100 186\"/></g><g stroke=\"none\"><circle cx=\"100\" cy=\"150\" r=\"13\"/><circle cx=\"68\" cy=\"122\" r=\"9\"/><circle cx=\"132\" cy=\"122\" r=\"9\"/><circle cx=\"100\" cy=\"186\" r=\"9\"/></g>"
+  },
+  "layers": [
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "mb",
+      "height": 52,
+      "centerX": 190,
+      "y": 214,
+      "align": "bottom",
+      "fill": "hero"
+    }
+  ]
+}

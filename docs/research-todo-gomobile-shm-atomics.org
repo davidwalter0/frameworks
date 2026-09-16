@@ -1,0 +1,413 @@
+:PROPERTIES:
+:ID:       frameworks-research-todo-gomobile-shm-atomics
+:END:
+#+title: Research todo — gomobile + libc shared memory + atomics shim
+#+date: 2026-09-04
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-09-04
+:END:
+
+** Status
+Open research plan. *One leg proven* (R0); nine investigations outstanding, all
+*filed as mgmt todos* (see "Filed todos"). Nothing here authorises building
+anything — the entry gate in
+[[file:shared-buffer-information-evaluation.org]] §6.3 still governs.
+
+** Completed
+- [X] R0 — Go =sync/atomic= ↔ C11 =stdatomic= ↔ Dart, one shm ring, cross-process:
+  *PROVEN on x86-64 Linux*
+
+** Next Steps
+- [ ] R4 and R5 first — they are the *cheapest and most likely to kill the idea*
+- [ ] R1/R2 next: they decide whether the mechanism is sound on the target CPUs
+- [ ] The rest only if the above survive
+
+** Open Questions
+- Whether any of this should be built at all. This plan answers *"would it
+  work?"*, never *"should we?"* — see §6.3 of the evaluation.
+
+* 0. The thesis under test
+
+The proposition, as put:
+
+#+begin_quote
+Go offers good concurrency; a C library may grant the synchronicity Dart lacks —
+*but it has to be proven across tools.*
+
+Combination: =gomobile= (Go on mobile) + libc shared memory + a C11 atomics shim
+that Dart loads.
+#+end_quote
+
+The thesis is *sound in principle and partly proven in practice*. The reason it
+still needs a research plan is that it spans **four independent toolchains** — the
+Go compiler and runtime, a C compiler's atomics, the Dart VM's FFI, and the
+mobile binding generator — on **two CPU memory models** (x86-64 TSO, ARM weak) and
+**three OS policy regimes** (Linux, Android, iOS). Agreement on any one of those
+says nothing about the others.
+
+"Proven across tools" is the right standard. This plan decomposes it into legs
+that can each be independently passed or failed.
+
+* R0 — Go ↔ C11 ↔ Dart on one shm ring *[PROVEN 2026-09-04, x86-64 Linux]*
+
+*Question.* Do Go's =sync/atomic= and C11 =stdatomic= produce a correct SPSC
+handoff on the same shared-memory ring, across a process boundary, with Dart
+consuming through an FFI shim?
+
+*Method.* A pure-Go producer (stdlib only — =syscall.Mmap= over =/dev/shm=, no
+cgo, so these are genuinely *Go's* atomics) writing a numbered message stream
+into a ring whose header layout is defined by the C shim; a Dart consumer mapping
+the same segment and draining it via the C =ring_read= (acquire on head, release
+on tail). 20,000 messages verified for order, gaps and duplicates.
+
+*Result.*
+
+: [go pid 2136662] mapped; capacity=65536
+: [go pid 2136662] sent 20000 messages
+: messages verified in order : 20000 / 20000
+: gaps (lost)                : 0
+: duplicates (torn/re-read)  : 0
+: bytes transferred          : 108890  in 9 ms
+: PASS — Go sync/atomic and C11 atomics agree across the process boundary
+
+Re-run with the ring shrunk to *256 bytes* to force the producer to block on full
+repeatedly (108,890 bytes through a 256-byte ring ≈ 425 wraps): *same result, 0
+gaps, 0 duplicates.*
+
+*What this establishes.* On x86-64 Linux, the three toolchains agree: Go's
+sequentially-consistent atomics and C11 acquire/release interoperate on the same
+addresses, the 32-byte header layout matches between a Go struct and a C struct,
+and Dart driving the C side sees a correct stream.
+
+*What it does NOT establish.* Everything below. In particular x86-64 is *TSO* —
+it is the memory model most likely to hide an ordering bug. **A pass here is
+necessary and nowhere near sufficient**; R1 is the real test.
+
+*Limit noted:* the consumer never fell behind (it spun on empty only once), so
+the *empty-side* handoff is far less exercised than the full-side. A proper
+soak would throttle the reader.
+
+* The outstanding investigations
+
+Ordered by *what kills the idea fastest*, not by logical sequence. R4 and R5 are
+first because a negative there ends the mobile half regardless of R1–R3.
+
+** R4 — Does Android give us POSIX shared memory at all? *[HIGHEST PRIORITY]*
+
+*Question.* On current Android, in an app sandbox: does =shm_open= work? Is
+=/dev/shm= mounted? Is =memfd_create= or ashmem the actual mechanism, and can two
+*processes belonging to the same app* map one segment?
+
+*Why it is first.* The whole shm design assumes a POSIX surface Linux gives
+freely. *I have deliberately asserted nothing about Android's here*, because I
+could not test it, and a guess would propagate. If Android has no usable shm for
+this shape, the mobile half of the thesis is over and only in-process options
+remain.
+
+*Compounding:* even with shm available, Android forbids exec'ing a binary — so
+there is no *second process* to share with. Recorded in-family at
+=voicelab/docs/android-gomobile.org:47= ("no =PATH=, no exec'ing a system
+binary"), *dated 2026-06-28 and inherited, not re-verified*. Re-verify it: it is
+the load-bearing constraint of
+[[file:gomobile-embedding-option.org]] §4.
+
+*Method.* A minimal NDK C program in a debug app: =shm_open= / =memfd_create= /
+=ftruncate= / =mmap=, on a device and an emulator, current API level and the
+project's minimum. Then the two-process variant, if any second process is
+reachable at all.
+
+*Falsifier.* =shm_open= failing, or no route to a second app process → the shm
+design is desktop-only, permanently. (Which is already the working assumption in
+=gomobile-embedding-option.org= §4 — this would confirm it rather than surprise
+us.)
+
+*Effort.* Low. *Status:* not started.
+
+** R5 — The same question for iOS *[HIGHEST PRIORITY]*
+
+*Question.* Does the iOS sandbox permit =shm_open=/=mmap= between processes, and
+is there any supported long-lived second process for a third-party app?
+
+*Why.* Same as R4, and *no in-family evidence exists at all* — both gomobile
+precedents here are Android; notekeep's doc says "(and iOS, if ever needed)", so
+the iOS path in this family is aspirational, never shipped.
+
+*Method.* A test target invoking =shm_open= under the App Sandbox; review of the
+App Group container mechanism as the sanctioned cross-process route; and a
+written finding on whether any background process model exists for the app shapes
+in this family.
+
+*Falsifier.* No supported second process → mobile is in-process-only on both
+platforms, and §4's desktop/mobile table becomes final rather than provisional.
+
+*Effort.* Low-medium. *Status:* not started.
+
+** R1 — ARM64: does the agreement hold on a weak memory model? *[CRITICAL]*
+
+*Question.* Does R0's result reproduce on ARM64, where acquire/release actually
+generate barriers rather than being free?
+
+*Why it is the real test.* x86-64 is TSO: most ordering errors are invisible
+there. Every mobile target and every Apple Silicon desktop is ARM. *An ordering
+bug that R0 cannot see is exactly the bug this design is most likely to have* —
+and the evaluation's F5 is currently labelled judgement precisely because no ARM
+run was made.
+
+*Method.* Run R0's harness unchanged on ARM64 — an Apple Silicon machine, an
+ARM64 Linux box, or qemu-system (qemu-*user* is not adequate; it does not
+faithfully model weak ordering). Extend it with a *torn-value* detector: payloads
+carrying a checksum or a monotonic tag in both the first and last byte of each
+message, so a reader that observes an advanced head with stale data is caught
+rather than merely suspected. Run under sustained contention for minutes, not
+milliseconds.
+
+*Falsifier.* Any gap, duplicate or torn payload → the shim's memory ordering is
+wrong somewhere, and the design does not ship until it is located.
+
+*Note.* A *pass* here is still not proof of correctness — race absence is not
+demonstrable by testing. Pair it with a reading of the generated instructions
+(=ldar=/=stlr= or =dmb= present where expected on both the Go and C sides).
+
+*Effort.* Medium. *Status:* not started.
+
+** R2 — 32-bit ARM and Go's 64-bit atomic alignment rule
+
+*Question.* If any target is 32-bit ARM (armv7), does the ring header satisfy
+Go's alignment requirement for 64-bit atomics, and does the C =_Atomic uint64_t=
+agree with Go's =uint64= on size *and* alignment there?
+
+*Why.* Go has a long-standing requirement that the first word of a 64-bit value
+used with =sync/atomic= be 8-byte aligned on 32-bit platforms, and it is a
+classic source of alignment panics. The header is currently mmap'd at offset 0 of
+a page, which is aligned — but a *nested* or offset placement would not be, and
+C's =_Atomic= may carry different alignment on that ABI.
+
+*Method.* Establish first whether 32-bit ARM is even a target for this family
+(it may not be, which closes the item cheaply). If it is: assert alignment at
+runtime on both sides and run R0's harness.
+
+*Falsifier.* Misalignment or a size/alignment disagreement → header layout must
+be redesigned, or armv7 dropped.
+
+*Effort.* Low. *Status:* not started — *begin by asking whether armv7 is in scope
+at all.*
+
+** R3 — Does a gomobile =.aar= compose with a separate C =.so=?
+
+*Question.* Can an app load a gomobile-generated =.aar= *and* a separately built
+C atomics shim, have Go's =sync/atomic= and the shim's C11 atomics address the
+same memory, and have Dart's FFI reach the shim — all in one process?
+
+*Why.* This is the literal composition the thesis proposes and *nothing about it
+is verified*. Each half works alone here. Plausible, unproven.
+
+*Sub-questions:*
+- Does Go code inside a gomobile binding retain full =mmap= / =sync/atomic=
+  ability, or does the binding context restrict it? (Expected: no restriction —
+  it is ordinary Go — but expectation is not evidence.)
+- Two runtimes plus a shim in one process: does the F4b signal-table union hold,
+  and does anything conflict with the Android runtime's own handlers?
+- Does =DynamicLibrary.open= reach a =.so= shipped in =jniLibs/= alongside the
+  =.aar='s own?
+
+*Method.* A minimal Android app: gomobile =.aar= exposing a start function; a C
+shim =.so= in =jniLibs/=; a Dart FFI binding to the shim; an in-process buffer
+both touch. Verify with R0's message-stream check.
+
+*Falsifier.* Any of the three legs failing → the combined design is not available
+on Android, and Pattern A (socket transport) is the answer.
+
+*Effort.* Medium-high — needs a real app skeleton. *Status:* not started.
+
+** R6 — Is a leaf FFI call a Dart *compiler* barrier?
+
+*Question.* Does =isLeaf: true= prevent the Dart compiler reordering subsequent
+typed-data reads across the call, or only skip the safepoint transition?
+
+*Why.* The evaluation's §6.5 measured leaf atomic loads at 7.38 ns and flagged
+this as the one unverified correctness question. *Hardware* ordering is correct
+by construction (C11 acquire/release emit the right barriers); the *compiler*
+question is open, and it matters if Dart reads payload bytes directly after an
+acquire load.
+
+*Method.* Read the Dart VM's FFI lowering for leaf calls; corroborate with a
+targeted experiment on ARM64 (a Dart-side read hoisted above a leaf call would
+show as a stale read under contention).
+
+*Falsifier.* If leaf calls are *not* a compiler barrier, then Dart must never
+read shared payload directly after an atomic — which forces the batched design
+(§6.5) rather than merely preferring it. *Note this outcome does not break
+anything we would build*, since batching is already the recommendation; it
+converts a preference into a requirement.
+
+*Effort.* Medium. *Status:* not started.
+
+** R7 — Re-measure FFI costs under AOT and on mobile
+
+*Question.* What do the §6.5 numbers (leaf atomic load 7.38 ns, non-leaf
+17.41 ns, batched 4 KB in 98 ns) become under Flutter's AOT compilation, on ARM,
+on a phone?
+
+*Why.* All §6.5 figures are x86-64 under the *JIT*, in a standalone Dart VM. FFI
+call cost is exactly the kind of thing that differs under AOT and on a
+power-managed mobile core. The measurements are honest about this; acting on them
+without re-measuring would not be.
+
+*Method.* Port the benchmark into a Flutter integration test, run on a physical
+device, release mode.
+
+*Falsifier.* None — this is calibration, not a hypothesis. But if per-call cost
+rises by an order of magnitude on device, the batch-size guidance changes.
+
+*Effort.* Medium. *Status:* not started.
+
+** R8 — Go runtime + Dart VM coexistence over a long-lived UI process
+
+*Question.* Does the F4b signal chaining hold in a real Flutter app running for
+hours, with platform threads and continuous SIGURG preemption?
+
+*Why.* F4b measured chaining in a *short-lived standalone* process and explicitly
+recorded that this is weak evidence for a long-lived UI process. This is the
+outstanding half of that finding.
+
+*Method.* A long-running Flutter app with the Go library loaded, under profiling;
+watch for dropped signals, crashes attributable to handler interaction, and
+whether Dart's own signal handling still functions.
+
+*Falsifier.* Any signal-related instability → in-process Go carries a cost the
+desktop separate-process design avoids, strengthening §6.5.
+
+*Effort.* Medium. *Status:* not started.
+
+** R9 — Binary-size cost of the Go runtime on mobile
+
+*Question.* How much does embedding Go via gomobile add to a shipped app, per
+ABI?
+
+*Why.* Named as an unmeasured cost in
+[[file:gomobile-embedding-option.org]] §5. Desktop measurement here for scale:
+the Go =c-shared= library was *2,487,880 B* against the C shim's *15,976 B*
+(156x). Mobile figures will differ and both ABIs ship.
+
+*Method.* Build the =.aar= for =android/arm64,android/amd64=; compare APK/AAB
+size with and without.
+
+*Effort.* Low. *Status:* not started.
+
+* Decision rules — what each outcome means
+
+Written in advance, so a result is not re-argued after the fact:
+
+| outcome | consequence |
+|---------+-------------|
+| R4 or R5 fails | mobile is in-process-only. The §6.5 shm design is *permanently desktop-only*. Pattern A (=gomobile= + Unix socket) is the mobile answer. |
+| R1 fails | the mechanism is unsound on the CPUs that matter. *Stop* — do not ship a shim whose ordering is wrong on ARM. |
+| R1 passes, R3 fails | shm+atomics is a desktop technique; mobile uses Pattern A. Same practical outcome as R4/R5 failing. |
+| R1 and R3 both pass | the full thesis holds. It *still* does not authorise building — §6.3's gate (named consumer + a measurement that transfer is the bottleneck) is unaffected by any of this. |
+| R6 fails | batching becomes mandatory rather than merely recommended. No design change; a constraint hardens. |
+
+*The asymmetry worth keeping in view:* R4/R5/R1 can each end the investigation
+cheaply, and R3/R7/R8 are expensive. Run the cheap killers first. This is the
+same ordering discipline the iteration gate asks for — a pass that cannot
+distinguish anything is not worth running.
+
+* Filed todos
+
+These investigations are filed in the =mgmt= corpus against
+=frameworks=. This document is their reference; the todo carries the question,
+method and falsifier in its context field.
+
+| todo | covers |
+|------+--------|
+| =44eb94e4= | R4 — Android shm + second-process availability *(high)* |
+| =2806b2e9= | R5 — iOS shm + background-process policy *(high)* |
+| =1ed66bcd= | R1 — ARM64 reproduction, the real correctness test *(high)* |
+| =348f7fba= | R3 — gomobile =.aar= ∘ C shim =.so=, the literal thesis *(medium)* |
+| =276c4e16= | R6 — leaf FFI call as a Dart compiler barrier *(medium)* |
+| =4fca0112= | R2/R7/R8/R9 — armv7 alignment, AOT costs, signal soak, size *(low)* |
+
+** Correction — mgmt was never unreachable, I queried the wrong surface
+
+The first version of this section said the =mgmt= upstream was *unreachable* and
+that the plan was therefore filed as a document only. *That was wrong, and the
+error is worth recording because it is the exact shape a tool-discoverability
+convention warns about: check whether a capability surface actually advertises
+a tool before concluding it is absent, and query the surface that owns the
+answer rather than a proxy for it.*
+
+I searched the *harness's* deferred-tool list (=ToolSearch=) for
+=mcp__mgk__mgmt__add-todo=, got no match, and concluded the capability was gone.
+The gateway's *own* surface — =ghk search_tools=, which is the thing that owns
+the answer — had the tools the whole time, registered under their un-prefixed
+names (=mgmt__add-todo=). =load_tools= then made them callable immediately.
+
+So this was not a fallback justified by clause (b); it was a *conclusion of
+absence drawn from the wrong instrument*. The rule's wording is precise about
+this — the check has to be of the surface that owns the answer, and a negative
+from anything else is not evidence. Recorded rather than quietly fixed, because a
+filed "capability missing" note is load-bearing: a later session would have
+trusted it.
+
+(The user caught it, with two words: "ghk load-tools?")
+
+* Source Verification Notes
+
+** Verified — 2026-09-04 on this host
+- R0's harness and its output, twice (65,536-byte and 256-byte rings). Pure-Go
+  producer: =syscall.Mmap= over =/dev/shm/tri_ring=, =sync/atomic= only, *no
+  cgo* — so the Go side is genuinely Go's atomics and not a C call in disguise.
+  Retained in a scratch directory outside the repo (=tri/=).
+- The C shim (=libatomics.so=, 15,976 B) and its ring implementation, retained in
+  a scratch directory outside the repo (=shmatomic/=).
+- Go =c-shared= size 2,487,880 B, for the R9 scale comparison.
+- =mgmt__add-todo= / =mgmt__list-todos= present in the ghk gateway registry via
+  =search_tools=, loaded with =load_tools=, and six todos created (IDs above).
+  My earlier "unreachable" finding came from querying the harness's tool list
+  instead of the gateway's — see the correction above.
+
+** Judgement, not measurement
+- The priority ordering, effort estimates and the decision-rules table.
+- The expectation that Go inside a gomobile binding retains =mmap=/=sync/atomic=
+  (R3) — stated as an expectation and explicitly flagged as unproven.
+- That qemu-user is inadequate for weak-ordering work while qemu-system is
+  adequate (R1) — a methodological judgement, not a measured claim.
+
+** Not verified — the entire point of the file
+- Android and iOS shm availability and process policy (R4, R5). *No claim is made
+  about either in this document*; the in-family Android sandbox record is quoted
+  as dated and inherited.
+- ARM64 and armv7 behaviour (R1, R2).
+- gomobile composition with a C shim (R3).
+- Leaf-call compiler-barrier semantics (R6).
+- AOT/on-device FFI costs (R7), long-run signal coexistence (R8), size (R9).
+
+* Glossary
+- TSO :: total store order — x86-64's strong memory model, which hides most
+  ordering errors. ARM's is weak, which is why R1 exists.
+- SPSC :: single-producer single-consumer.
+- torn value :: a read observing part of a write, the failure a weak memory model
+  permits and R1's checksum tags are designed to catch.
+- leaf call :: an FFI call the Dart VM invokes without a safepoint transition;
+  faster, and the subject of R6.
+
+* Index
+- The one proven leg → R0
+- Cheapest ways to kill the idea → R4, R5
+- The real correctness test → R1
+- The literal composition proposed → R3
+- What each outcome means → "Decision rules"
+
+* Cross-References
+- Evaluation and the entry gate: [[file:shared-buffer-information-evaluation.org]] §6.3, §6.5
+- The mobile option this constrains: [[file:gomobile-embedding-option.org]]
+- Prior position: [[file:flutter-concurrency-and-paging.org]] §4b.4
+- Session: [[file:sessions/2026-09-04-docs-shared-buffer-evaluation.org]]
+
+* Footnotes
+[fn:gate] Nothing in this plan authorises implementation. The gate in the
+evaluation's §6.3 — a named first consumer, a measurement showing transfer rather
+than parse is the bottleneck, and evidence the cheap alternative did not close
+the gap — is unaffected by any result here. This plan answers "would it work",
+never "should we".

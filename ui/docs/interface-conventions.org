@@ -1,0 +1,649 @@
+:PROPERTIES:
+:ID:       frameworks-ui-interface-conventions
+:END:
+#+title: Interface conventions — the platform-decoupling seam pattern
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Complete. This document names and mandates the seam pattern that
+[[file:../../docs/architecture-and-process-design.org][architecture-and-process-design.org]] §2 already identified across four
+instances in the kit but did not go beyond a summary table for. Everything here
+was re-verified directly against the source files (not taken on the strength of
+that doc's summary) and goes materially deeper: the four instances are *not*
+uniform, three distinct grades of compiler-enforced contract exist across them,
+and one asymmetry that looks like an oversight turns out to be principled once
+the semantics are checked. Task: mgmt todo =74e882ef=.
+
+** Completed
+- [X] Re-verified all four seams file-by-file (line counts, contracts, exports)
+- [X] Traced every =_default.dart= consumer (6, all confirmed)
+- [X] Read the Go crossover (=install.go=, =icons.go=, =go-version/sign.go=)
+- [X] Read =capabilities.dart= in full (223 lines)
+- [X] Diffed the task-board fork against the promoted =AdaptiveLayout= line by
+  line and confirmed the "4 =ref.read= writes" claim exactly
+- [X] Confirmed =ui/pkg/desktop_kit= is a byte-identical copy of
+  =ui-kit-private= (checked with =diff -rq= across =host/=, =settings/=,
+  =theme/=, =layout/=) — citations below use the in-repo copy's paths
+- [X] Confirmed =ui/pkg/app_kit= and =ui/cmd= do not yet exist (tier 2 truly
+  has no seams because it has no code)
+
+** Next Steps
+- [ ] Add a =font_enumeration.dart= interface file the next time that seam is
+  touched (§3.3) — not urgent, but the gap is real
+- [ ] When =app_kit= lands its first host-touching capability (window state is
+  the likely first), point back here rather than re-deriving the shape
+
+* 1. Scope
+
+[[file:../../docs/architecture-and-process-design.org::*2. Interface decoupling — the seam convention, already proven 4×][§2 of the architecture doc]]
+states the finding and the mandate in four short subsections. This document is
+the thing that mandate points at: the full mechanics, the exact contract each
+file carries, where the four instances diverge from each other, and how to
+review a migration against the pattern. It supersedes nothing there — the two
+documents cite each other and should be read as one narrower / one broader pass
+over the same evidence.
+
+* 2. The four seams, verified
+
+All four re-read directly (2026-07-29); line counts below are exact, not
+carried over from the architecture doc's table.
+
+| Seam                | Interface file                                    | Selector                        | =_io=              | =_web=              | =_stub=              |
+|---------------------+----------------------------------------------------+----------------------------------+---------------------+----------------------+------------------------|
+| =host_env=          | [[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]] — 77           | [[file:../pkg/desktop_kit/lib/src/host/host_env_default.dart][host_env_default.dart]] — 31 | [[file:../pkg/desktop_kit/lib/src/host/host_env_io.dart][host_env_io.dart]] — 41       | [[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]] — 41       | [[file:../pkg/desktop_kit/lib/src/host/host_env_stub.dart][host_env_stub.dart]] — 33         |
+| =host_process=      | [[file:../pkg/desktop_kit/lib/src/host/host_process.dart][host_process.dart]] — 64       | [[file:../pkg/desktop_kit/lib/src/host/host_process_default.dart][host_process_default.dart]] — 13 | [[file:../pkg/desktop_kit/lib/src/host/host_process_io.dart][host_process_io.dart]] — 53   | [[file:../pkg/desktop_kit/lib/src/host/host_process_web.dart][host_process_web.dart]] — 24   | *none* — see §3.2               |
+| =settings_backend=  | [[file:../pkg/desktop_kit/lib/src/settings/settings_backend.dart][settings_backend.dart]] — 59 | [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_default.dart][settings_backend_default.dart]] — 18 | [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_io.dart][settings_backend_io.dart]] — 107 | [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_web.dart][settings_backend_web.dart]] — 51 | [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_stub.dart][settings_backend_stub.dart]] — 20 |
+| =font_enumeration=  | *none* — see §3.3                                 | [[file:../pkg/desktop_kit/lib/src/theme/font_enumeration_default.dart][font_enumeration_default.dart]] — 12 | [[file:../pkg/desktop_kit/lib/src/theme/font_enumeration_io.dart][font_enumeration_io.dart]] — 52 | [[file:../pkg/desktop_kit/lib/src/theme/font_enumeration_web.dart][font_enumeration_web.dart]] — 18 | *none* — see §3.2               |
+
+Measured consumers of the =_default.dart= selectors (grep for
+=import '.*_default\.dart'= across =lib/src=, six hits, all confirmed by
+reading the importing file):
+
+- [[file:../pkg/desktop_kit/lib/src/widgets/file_ref.dart][widgets/file_ref.dart]]:11 — =host_env_default.dart=
+- [[file:../pkg/desktop_kit/lib/src/clipboard/primary_selection.dart][clipboard/primary_selection.dart]]:28–29 — =host_env_default.dart= AND =host_process_default.dart=
+- [[file:../pkg/desktop_kit/lib/src/anthy/anthy_egg.dart][anthy/anthy_egg.dart]]:3 — =host_process_default.dart=
+- [[file:../pkg/desktop_kit/lib/src/theme/font_tools.dart][theme/font_tools.dart]]:12–13 — =host_env_default.dart= AND =font_enumeration_default.dart=
+- [[file:../pkg/desktop_kit/lib/src/theme/host_ui_font.dart][theme/host_ui_font.dart]]:11–12 — =host_env_default.dart= AND =host_process_default.dart=
+- [[file:../pkg/desktop_kit/lib/src/settings/settings_store.dart][settings/settings_store.dart]]:24 — =settings_backend_default.dart=
+
+No consumer outside these six files, and none of the four =_io.dart=/=_web.dart=/=_stub.dart=
+implementation files, imports =dart:io= — confirmed by grep across
+=lib/src= for =import 'dart:io'=: it appears only inside the =_io.dart= variant
+of each seam. That is the entire payoff of the pattern stated as a fact rather
+than an aspiration.
+
+* 3. The five-file shape, and where the four instances actually diverge
+
+The nominal shape (also stated in the architecture doc, repeated here because
+the divergences below are stated *against* it):
+
+#+begin_src text
+X.dart          the abstract interface. NO platform imports. Pure, testable.
+X_default.dart  the selector: a conditional `export` picking a variant.
+X_io.dart       the dart:io implementation.
+X_web.dart      the browser implementation.
+X_stub.dart     the degraded implementation, where a host may have neither.
+#+end_src
+
+Read as a checklist, only =host_env= satisfies all five rows literally.
+=settings_backend= also satisfies all five. =host_process= and =font_enumeration=
+each fail two of the five rows — but the two failures are not the same failure,
+and only one of the four is arguably an accident.
+
+** 3.1 Contract strength: three different grades across four seams
+
+Not "same interface, different implementations" everywhere — the interface
+itself is enforced with different strength:
+
+*** Grade 1 — abstract class, checked by the analyzer per-file (=host_env=, =settings_backend=)
+
+[[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:57 declares =abstract class HostEnv=; every implementation
+declares =implements HostEnv= —
+[[file:../pkg/desktop_kit/lib/src/host/host_env_io.dart][host_env_io.dart]]:12 (=class IoHostEnv implements HostEnv=),
+[[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]]:16 (=class WebHostEnv implements HostEnv=),
+[[file:../pkg/desktop_kit/lib/src/host/host_env_stub.dart][host_env_stub.dart]]:12 (=class StubHostEnv implements HostEnv=). Same pattern
+for [[file:../pkg/desktop_kit/lib/src/settings/settings_backend.dart][settings_backend.dart]]:20's =abstract class SettingsBackend= against
+=FileSettingsBackend=, =WebSettingsBackend=, =MemorySettingsBackend=.
+
+[JUDGEMENT, general Dart-language knowledge rather than something executed this
+session] An =implements= clause is checked by the analyzer from the class
+declaration alone — every abstract member must be present with a compatible
+signature — independent of which conditional-import branch a given build
+target actually selects. That means =host_env_web.dart= gets checked against
+=HostEnv= even on a run that never selects the web branch. I did not run
+=dart analyze= to confirm this empirically in this session; it is stated as
+language behaviour, not a measurement.
+
+*** Grade 2 — typedef'd shape + free functions, pinned only at a consumer (=host_process=)
+
+[[file:../pkg/desktop_kit/lib/src/host/host_process.dart][host_process.dart]] declares no abstract class. It declares two typedefs
+(=HostProcessRunner= at line 37, =HostPathProbe= at line 44) plus the
+=HostProcessResult= value type and the =HostProcessUnsupported= exception.
+[[file:../pkg/desktop_kit/lib/src/host/host_process_io.dart][host_process_io.dart]] and
+[[file:../pkg/desktop_kit/lib/src/host/host_process_web.dart][host_process_web.dart]] each define plain top-level functions
+(=runHostProcess=, =hostExecutableExists=) matching those typedefs' shapes *by
+hand-written signature*, not by declaring themselves as that type. The contract
+is enforced only where a caller assigns one of those functions into a variable
+typed as the typedef —
+[[file:../pkg/desktop_kit/lib/src/clipboard/primary_selection.dart][primary_selection.dart]]:135 does exactly that:
+=_run = processRunner ?? runHostProcess=, where =_run= is declared
+=final ProcessRunner _run= (line 139, =ProcessRunner= being =HostProcessRunner=
+aliased at line 93). That assignment is a real, analyzer-checked type
+constraint — but it only fires for whichever variant is actually resolved into
+that import at analysis/build time.
+
+*** Grade 3 — no shared contract file at all (=font_enumeration=)
+
+There is no =font_enumeration.dart=. Confirmed by directory listing
+(=ls lib/src/theme/= shows only =_default=, =_io=, =_web=). The "interface" for
+this seam exists only as: (a) the doc-comment table in
+[[file:../pkg/desktop_kit/lib/src/theme/font_enumeration_default.dart][font_enumeration_default.dart]]:1–8, which describes behaviour but binds
+nothing, and (b) the call sites in
+[[file:../pkg/desktop_kit/lib/src/theme/font_tools.dart][font_tools.dart]]:23,29,69 (=host_fonts.isOnPath(exe)=,
+=host_fonts.enumerateHostFontFamilies()=), which pin a shape only for whichever
+variant conditional-export resolves in that analysis pass. A future edit that
+changed =font_enumeration_io.dart='s signature without updating
+=font_enumeration_web.dart='s would not be caught by any shared declaration —
+only by actually building/analyzing the other target and hitting a call-site
+mismatch in =font_tools.dart=.
+
+**** Does the gap matter in practice?
+
+Checked, not assumed: this repo's =Makefile= runs =flutter analyze= and
+=flutter test= with no =--platform web=/=-d web=/=dart compile js= step
+anywhere (grepped the =Makefile= and the whole tree for those tokens — no
+hits), and there is no =.github= CI directory at all in
+=ui-kit-private=. That means the web variant of *every* seam, not only
+=font_enumeration=, is currently exercised by nothing but the analyzer's
+static pass over its own file — this is the same "almost none of it is
+automated" finding the architecture doc's §3 makes at the process level, and
+it is why =font_enumeration='s missing compiler-checked contract is a real
+(if currently dormant) gap rather than a solved-in-practice one: the thing
+that would catch a drift (a real web build/test run) does not exist yet in
+this repo's check suite.
+
+** 3.2 The stub-file split: two seams collapse it, two don't — and that's principled, not sloppy
+
+[[file:../pkg/desktop_kit/lib/src/host/host_process_default.dart][host_process_default.dart]]:11–13 resolves as:
+#+begin_src dart
+export 'host_process_web.dart'
+    if (dart.library.io) 'host_process_io.dart'
+    if (dart.library.js_interop) 'host_process_web.dart';
+#+end_src
+The un-conditioned default *is* =host_process_web.dart= — there is no distinct
+stub. [[file:../pkg/desktop_kit/lib/src/theme/font_enumeration_default.dart][font_enumeration_default.dart]]:10–12 has the identical structure,
+collapsing onto its own web file. =host_env_default.dart= and
+=settings_backend_default.dart=, by contrast, each have a real third file for
+the "neither" branch.
+
+The reason is not stylistic — it is that the web and "neither" answers are
+*semantically identical* for process spawning and font enumeration (no process
+facility either way; no font list either way), so collapsing them loses no
+information: [[file:../pkg/desktop_kit/lib/src/host/host_process_web.dart][host_process_web.dart]]'s =runHostProcess= throws
+=HostProcessUnsupported= and =hostExecutableExists= returns =false= — that is
+also the exactly-correct answer for a target satisfying neither condition.
+
+For =host_env= and =settings_backend=, the web and "neither" answers *differ*:
+
+- =HostEnv.os=: [[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]]:31 returns =HostOs.web=; [[file:../pkg/desktop_kit/lib/src/host/host_env_stub.dart][host_env_stub.dart]]:26
+  returns =HostOs.unknown=. Collapsing these would make an unrecognized target
+  falsely report itself as "the browser."
+- =SettingsBackend.persists=: [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_web.dart][settings_backend_web.dart]]:50 is =true=
+  (=localStorage= genuinely persists); [[file:../pkg/desktop_kit/lib/src/settings/settings_backend_stub.dart][settings_backend_stub.dart]] (via
+  =MemorySettingsBackend=, [[file:../pkg/desktop_kit/lib/src/settings/settings_backend.dart][settings_backend.dart]]:58) is =false=. Collapsing
+  these would make a genuinely non-persistent host claim persistence it does
+  not have — exactly the failure mode [[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]'s whole design
+  (§6 below) exists to prevent.
+
+So: three of the four instances' divergence from the nominal five-file shape
+is *correct engineering judgement applied per-seam*, not inconsistency for its
+own sake. The one place worth a genuine second look is §3.3.
+
+** 3.3 Should =font_enumeration= get a real interface file?
+
+Unlike §3.2, this one has no defensible "the answers are identical" argument —
+=isOnPath= and =enumerateHostFontFamilies= really do need matching signatures
+across =_io.dart= and =_web.dart=, and nothing today declares that contract in
+one place. Given §3.1's "not exercised by CI" finding, this is the one true gap
+among the four: cheap to close (a =font_enumeration.dart= with two
+=typedef=s, mirroring =host_process='s Grade-2 pattern, would be enough — it
+does not need a full abstract class), not urgent (nothing has drifted yet),
+and worth doing the next time this seam is touched rather than as a standalone
+change.
+
+* 4. The principle — stronger than the file layout
+
+Verbatim, [[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:54–56 (the doc comment immediately above the
+=abstract class HostEnv= declaration at line 57):
+
+#+begin_quote
+Implementations are trivial on `dart:io` hosts and near-empty on the web,
+which is the point: callers get a total interface and branch on the values,
+not on which platform they think they are.
+#+end_quote
+
+Two consequences follow, and they are not equally load-bearing.
+
+** 4.1 Total interface
+
+Every method exists on every host; nothing is conditionally absent from the
+*type*, only from its *answer*. Illustrated directly by
+[[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:57–77's members:
+
+- =String? get home= ([[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:76) — a browser returns =null=
+  ([[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]]:40), never an absent getter or a thrown
+  =UnsupportedError=. The doc comment on the web implementation is explicit
+  about *why*: "returns the honest browser answer rather than a plausible
+  desktop-shaped lie" ([[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]]:3–7) — =home= is =null=, not a
+  synthesized =/home/user=, precisely so a caller that forgot to handle
+  absence fails loudly instead of resolving a path that goes nowhere.
+- =Map<String, String> get environment= ([[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:60) — a browser
+  returns =const <String, String>{}= ([[file:../pkg/desktop_kit/lib/src/host/host_env_web.dart][host_env_web.dart]]:21), not a thrown
+  exception a caller would need a =try/catch= to route around.
+- =bool get hasProcesses= ([[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:73) — always answerable, =true= on
+  desktop io hosts ([[file:../pkg/desktop_kit/lib/src/host/host_env_io.dart][host_env_io.dart]]:36, excluding Android/iOS), =false=
+  everywhere else.
+
+The practical payoff: [[file:../pkg/desktop_kit/lib/src/widgets/file_ref.dart][file_ref.dart]]:27–33's =collapseTilde= reads
+=hostEnv.home ?? ''= and falls through to "leave the path unchanged" with no
+platform conditional in the caller at all — the *totality* of the interface is
+what makes that one-liner correct on every host.
+
+** 4.2 Branch on capability, not identity — and why this is the half that actually matters
+
+=bool hasProcesses= sits ON the interface ([[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:73). A caller asks
+"can I spawn a process", never "am I on Linux". =HostOs os= exists
+([[file:../pkg/desktop_kit/lib/src/host/host_env.dart][host_env.dart]]:70) but is not how control flow is supposed to be decided.
+
+*Why this is the load-bearing half, not just a style preference:* a seam with
+a pure interface but callers that re-derive platform identity at every call
+site has re-coupled itself to the platform anyway — the abstraction boundary
+still exists in the type system, but every consumer has quietly rebuilt a
+parallel, uncoordinated copy of "what does this platform support" logic next
+to it. The cost shows up later and diffusely: the day a new host mode is added
+(the architecture doc's §3 "remote" mode, or a future WASI target), every one
+of those re-derivations has to be found and updated individually, while a
+codebase that asked =hostEnv.hasProcesses= everywhere needs the seam updated
+in exactly one place — the implementation that answers that question for the
+new host.
+
+Grepping the whole non-implementation source tree for
+=hostEnv.os= / =Platform.isX= confirms the kit mostly follows its own rule:
+outside the four seams' own =_io=/=_web=/=_stub= files, there are exactly two
+call sites that read platform identity, and both are legitimate *single
+translation points* rather than re-litigated branches:
+
+- [[file:../pkg/desktop_kit/lib/src/theme/font_tools.dart][font_tools.dart]]:23 — =currentFontOs() => hostEnv.os.fontTag= feeds
+  =_curatedFallback(String os)= (font_tools.dart:87), which switches on the tag
+  to pick a *static per-platform font list*. There is no boolean capability
+  that could stand in for "which fonts are typically installed on this OS" —
+  the list itself is inherently platform-keyed data, not a yes/no facility, so
+  reading identity here is the correct place to do it exactly once.
+- [[file:../pkg/desktop_kit/lib/src/theme/host_ui_font.dart][host_ui_font.dart]]:54 — =if (hostEnv.os != HostOs.linux) return null;=
+  gates a =gsettings= subprocess call that is meaningful only on
+  GNOME/Linux. Worth flagging as a nuance rather than a clean pass: this
+  function backs [[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]'s declared =HostCapability.hostUiFont=
+  ([[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]:72–73) enum entry, yet =detectHostUiFont= decides for
+  itself via raw OS identity rather than consulting a capability status first.
+  In isolation this is defensible — the function IS the implementation that a
+  capability status would summarize, so it has to ground out in *something*
+  concrete — but it means the identity check and the capability declaration
+  are two separate, unlinked statements of the same fact, and a reviewer
+  cannot tell from =capabilities.dart= alone that =hostUiFont= is Linux-only;
+  they have to also read =host_ui_font.dart=:54. [JUDGEMENT] Not a bug, but a
+  place where the pattern's documentation-by-code is thinner than the rest.
+
+Neither site is a violation of §4.2 in the sense the smell list (§7) cares
+about: neither is a *caller* re-deriving platform identity to decide whether to
+use the seam. Both are the seam's own implementation grounding out in a real
+platform fact, done once, in one file, and not repeated anywhere else in the
+non-implementation tree (confirmed by the grep above — these are the only two
+hits).
+
+* 5. The crossover into Go — same idea, no shared name
+
+The architecture doc's §2 names this in one sentence; here is the reading that
+backs it. All three files are read directly, all in this same repository
+(the third is in a sibling repo, =go-version=, and is quoted rather than
+linked).
+
+** 5.1 =Options.Out io.Writer= — the output seam
+
+[[file:../../go/pkg/installer/install.go][go/pkg/installer/install.go]]:14–22 declares
+=Options= with =Out io.Writer=; its accessor at lines 31–36:
+#+begin_src go
+func (o Options) out() progress {
+	if o.Out != nil {
+		return progress{o.Out}
+	}
+	return progress{os.Stdout}
+}
+#+end_src
+This is the Grade-1-equivalent move in Go idiom: =io.Writer= is already the
+total interface (every =io.Writer= answers =Write=; there is no "web" variant
+that would throw), and the zero value (=nil=) resolves to a concrete default
+rather than requiring every caller to supply one — the same "total interface,
+sane default" property =HostEnv='s empty map / null home give Dart callers.
+Tests inject a =bytes.Buffer= in place of =os.Stdout=; nothing about
+=Install='s logic branches on which writer it got.
+
+** 5.2 =SystemHicolorIndexTheme= as a package var — the redirectable constant
+
+[[file:../../go/pkg/installer/icons.go][go/pkg/installer/icons.go]]:18–22:
+#+begin_src go
+// SystemHicolorIndexTheme is the canonical system-provided index.theme, ...
+// It is a var rather than a const so tests can point it at a temp path
+// instead of the real system file.
+var SystemHicolorIndexTheme = "/usr/share/icons/hicolor/index.theme"
+#+end_src
+This is the simplest possible seam: a value that would otherwise be a hard-
+coded system path is a package-level =var=, not a =const=, purely so a test
+can substitute it. No interface, no injection parameter threading — the
+Go-idiomatic minimum needed to make =ensureIconTheme= ([[file:../../go/pkg/installer/icons.go][icons.go]]:77–92,
+which reads =SystemHicolorIndexTheme= at line 85) testable without touching a
+real =/usr= path. This is the same shape as the Dart seams' underlying
+motivation (testability without touching the real host) at the cheapest
+possible cost for the language.
+
+** 5.3 =cosignRunner= — the subprocess seam made fake-able
+
+Quoted verbatim from the sibling repo,
+=go-version/pkg/tools/sign.go=:46–64:
+#+begin_src go
+// cosignRunner is the single seam through which every cosign invocation passes.
+// The real implementation shells out to the cosign binary on PATH; unit tests
+// substitute a fake that asserts the argument vector and writes stub artifacts,
+// so the default `go test` needs neither cosign nor a network nor a real key.
+var cosignRunner = func(args []string, env []string, stdin string) error {
+	cmd := exec.Command("cosign", args...)
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	cmd.Env = append(os.Environ(), env...)
+	return cmd.Run()
+}
+#+end_src
+This is the closest Go analogue to =host_process=: a package-level function
+variable playing the role =HostProcessRunner= plays as a typedef +
+default-selected implementation, substituted wholesale in tests
+(=go-version='s comment states explicitly: no cosign binary, no network, no
+real key needed for =go test=). =SignBinary= (=go-version/pkg/tools/sign.go=:195,
+sibling repo) and =VerifyBinarySignature= (sign.go:290) call *only* =cosignRunner=, never
+=exec.Command("cosign", ...)= directly — mirroring the "consumers import only
+the seam, never the raw platform API" rule from §2.
+
+** 5.4 The name for both languages
+
+Same underlying idea in every one of these six sites (four Dart, two-and-a-
+half Go — =Options.Out= and =cosignRunner= are the clean matches; =SystemHicolorIndexTheme=
+is the degenerate single-value case): *an injected boundary with a total,
+always-answerable interface, so tests and alternate hosts substitute a fake
+without the caller's logic branching on which one it got.* State it once here
+rather than re-deriving it per package — which is exactly what had been
+happening: the Go crossover existed in three separate files before this
+document, with three separate ad-hoc justifications, and no shared name.
+
+* 6. The capability surface — where a new probe belongs
+
+[[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]] (223 lines, read in full) is the existing home for
+"what can this host do", and a new host-touching probe belongs there rather
+than as a fresh ad-hoc check, per the architecture doc's §2 mandate. What it
+actually provides, verified by reading:
+
+- =enum HostCapability= ([[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]:33–80) — sixteen named facilities
+  (=fileRead=, =fileWrite=, =directoryList=, =pathNamespace=, =fileWatch=,
+  =subprocess=, =shell=, =anthyIme=, =dictionaryGloss=, =primarySelection=,
+  =systemClipboard=, =hostFonts=, =hostUiFont=, =persistentSettings=,
+  =processEnvironment=). The doc comment states the granularity rule
+  explicitly (lines 28–32): split a capability from its neighbour only when
+  some host grades it differently — =fileRead=/=fileWrite= are split because a
+  browser can be granted read-only handles; =subprocess=/=shell= are split
+  because a remote host might allow one-shot commands but refuse an
+  interactive pty.
+- =enum CapabilityGrade= ([[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]:88–99) — =full= / =degraded= /
+  =absent=, with =degraded= called out in the doc comment (lines 84–87) as
+  "the load-bearing" grade: without it a host would have to claim a facility
+  is either perfect or missing, when the honest answer for most web facilities
+  is neither.
+- =class CapabilityStatus= ([[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]:109–155) — =detail= is
+  non-optional and explicitly NOT allowed to be a bare "unsupported"; the doc
+  comment (lines 105–107) gives the standard this is held to: "no process
+  host — run =eedit --serve= and connect in remote mode" is acceptable,
+  "unsupported" is not.
+- =class HostCapabilities= ([[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]]:167–223) — =statusOf= (lines
+  189–195) is itself a total-interface instance of §4.1's principle at a
+  higher level: an undeclared capability does not return =null=, it falls back
+  to a synthesized =absent= status whose detail says *"not declared by the
+  '$hostMode' host — this is a host-definition gap, please report it"*
+  (lines 193–194). A host that forgets to grade a capability produces a visible
+  self-report of the omission rather than a silent false or a crash.
+
+* 7. The smell list for migration review
+
+Per the task brief, three smells, with the mechanical/human split verified
+directly against the =Makefile= rather than assumed:
+
+1. *A tier-1 component taking a =WidgetRef=.* Caught mechanically by
+   =make deps-guard= — but the mechanism is worth being precise about, because
+   it is not an AST lint. =ui-kit-private/Makefile= (sibling repo,
+   verified by direct read)'s =deps-guard=
+   target (verified directly) is:
+   #+begin_src makefile
+   deps-guard:
+   	@if grep -Eq '^[[:space:]]*(flutter_riverpod|riverpod|provider|flex_color_scheme|package_info_plus)[[:space:]]*:' pubspec.yaml; then \
+   		echo "ERROR: forbidden dependency in desktop_kit core ..."; \
+   		exit 1; \
+   	fi
+   #+end_src
+   It greps =pubspec.yaml= for a forbidden *dependency declaration*, not for
+   =WidgetRef= usage. The mechanism works transitively: if
+   =flutter_riverpod= can never appear as a declared dependency, the
+   =WidgetRef= type is never importable in the first place, so no file in the
+   package can reference it — the gate operates one layer below the symbol,
+   at the package manifest, which is why it is airtight against this smell
+   specifically (there is no way to import a type from an undeclared
+   package) rather than merely a heuristic pattern match.
+2. *A =BuildContext= used only for a theme lookup.* Needs human review — grep
+   cannot distinguish "reads =Theme.of(context)= because a widget legitimately
+   needs the ambient theme" from "reads it because the widget author reached
+   for a familiar tool instead of taking the value as a parameter."
+   =BuildContext= is core Flutter, not a forbidden dependency, so §7.1's
+   manifest-level gate cannot see this at all.
+3. *A =Platform.isX= branch.* Also needs human review — =dart:io= itself is a
+   legitimate import inside the =_io.dart= variant of every seam (§2's table),
+   so a manifest-level or import-level gate cannot distinguish "this
+   =Platform.isX= is inside the seam's own implementation, where it belongs"
+   from "this =Platform.isX= is in a consumer that reached around the seam."
+   §4.2's grep (two hits, both defensible single-translation-points) is the
+   closest this document comes to mechanizing this smell, and it required
+   manual judgement on each hit, not a pass/fail rule.
+
+* 8. The worked example: task-board's AdaptiveLayout, and why the refactor is the whole story
+
+Read both files in full and compared line by line.
+
+** 8.1 What the app-local fork looked like
+
+=task-board/.worktree/feature/flutter-rewrite/flutter_app/lib/presentation/shared/widgets/adaptive_layout.dart=
+(outside this repo; read directly, not summarized):
+
+- =class AdaptiveLayout extends ConsumerWidget= (line 107), =build(BuildContext
+  context, WidgetRef ref)= (line 120), reading state via
+  =ref.watch(adaptiveLayoutProvider)= (line 121).
+- An =AdaptiveLayoutNotifier extends Notifier<AdaptiveLayoutState>= (lines
+  52–99) whose =build()= itself calls =ref.watch(localStorageProvider)=
+  (line 55) — a Riverpod read nested inside a Riverpod notifier's own
+  construction.
+- Exactly four =ref.read(localStorageProvider)= write sites, matching the task
+  brief precisely: =setMode= (lines 65–71), =setListFraction= (lines 73–80),
+  =setDetailFraction= (lines 82–89), =setOverlayFraction= (lines 91–98) — each
+  one calls =ref.read(localStorageProvider).set*(...)= immediately after
+  updating =state=.
+
+** 8.2 What the promoted kit version looks like
+
+[[file:../pkg/desktop_kit/lib/src/layout/adaptive_layout.dart][layout/adaptive_layout.dart]] (byte-identical to the upstream kit, confirmed
+by =diff -rq=):
+
+- =class AdaptiveLayout extends StatelessWidget= ([[file:../pkg/desktop_kit/lib/src/layout/adaptive_layout.dart][adaptive_layout.dart]]:54),
+  =build(BuildContext context)= (line 106) — no =WidgetRef=, no =ref=
+  parameter at all.
+- =mode=, =listFraction=, =detailFraction=, =overlayFraction= are
+  =required= constructor parameters (lines 59–65) — the exact four values the
+  fork's notifier held as state are now host-supplied inputs.
+- =onListFraction=, =onDetailFraction=, =onOverlayFraction= are
+  =ValueChanged<double>= callbacks (lines 89–91) that the widget invokes with
+  an already-clamped value (line 87's =_clamp= helper is applied before every
+  callback invocation) — the exact four write sites in the fork's notifier are
+  now the host's problem, discharged through a callback instead of a captured
+  =ref=.
+- The library doc comment (lines 1–8) states this explicitly: "refactored to a
+  CONTROLLED widget per the kit rule: the host passes the mode + pane
+  fractions and receives onChanged callbacks; the kit holds no state and no
+  persistence."
+
+** 8.3 The punchline
+
+This is not a parallel example of the seam pattern — it is upstream of it. A
+=ConsumerWidget= reading =ref.watch(adaptiveLayoutProvider)= is, definitionally,
+coupled to Riverpod, and Riverpod is exactly the dependency
+=make deps-guard= (§7.1) forbids in the core package. =AdaptiveLayout= could
+not have crossed into =desktop_kit= *at all* while it was a =ConsumerWidget= —
+not "it would have been better practice to decouple it first," but
+"=deps-guard= would have failed the build the moment =flutter_riverpod= was
+added to =pubspec.yaml= to make it compile." The state-management-agnostic
+constructor-parameters-and-callbacks shape is not a nice-to-have layered on top
+of the promotion; it is the admission ticket. *That refactor is why it could
+live in the kit at all* — every future promotion candidate that still reads a
+provider is, by the same mechanism, not yet eligible, no matter how otherwise
+well-written it is.
+
+* 9. Where the convention must be applied going forward
+
+Verified directly (not assumed from the architecture doc): =ui/pkg/app_kit=
+does not exist — =ui/pkg= contains only =.gitkeep= and the already-promoted
+=desktop_kit=; =ui/cmd= contains only =.gitkeep=. Tier 2 has no seams today
+because it has no code today. Every host-touching capability it grows —
+window state, tray/indicator, autostart, the portal =Inhibit= call named in
+the task brief — takes the shape in §3 from the start: an interface file (or,
+per §3.1's Grade 2, a typedef'd shape) with no platform import, a
+=_default.dart= selector, and implementations per host, registered as a named
+=HostCapability= in [[file:../pkg/desktop_kit/lib/src/host/capabilities.dart][capabilities.dart]] (§6) rather than a fresh ad-hoc
+=Platform.isX= check invented at the call site. The failure mode this
+prevents is the one the duplication census already measured once for the UI
+layer at large: nine apps each hand-rolling the same probe. Doing it right
+from the first line of =app_kit= costs nothing extra; discovering the
+duplication after the fact costs a census and a migration.
+
+* 10. Performance
+
+Not measured. A conditional export's effect on tree-shaking (whether an unused
+=_io.dart= or =_web.dart= branch is actually excluded from a given build's
+output, and by how much) would require building both a native and a =flutter
+build web= target and diffing output size — this session was explicitly scoped
+away from running any Dart/Flutter build or test (a sibling agent owns that
+work and needs the memory headroom), so no such measurement was attempted.
+Absent a measurement, no performance claim is made either way.
+
+* 11. Summary of inconsistencies and violations, for the record
+
+Per the task brief's request to report these explicitly rather than only the
+clean version of the story:
+
+- *Contract strength is not uniform* (§3.1): =host_env= and =settings_backend=
+  get a real analyzer-checked =abstract class=; =host_process= gets a
+  typedef'd shape pinned only at a consumer; =font_enumeration= gets no shared
+  contract file at all. This is a genuine gradient, not a documentation
+  artifact.
+- *The stub-file split looks inconsistent and mostly isn't* (§3.2): two seams
+  collapse "web" and "neither" into one file, two don't — verified this tracks
+  a real semantic difference (=os= identity and =persists= truthfulness) in the
+  two that don't collapse, not carelessness in the two that do.
+- *=font_enumeration='s missing interface file is the one real gap* (§3.3),
+  made concrete by §3.1's separate finding that no CI in this repo currently
+  builds/analyzes a web target at all — so a drift between its =_io= and
+  =_web= signatures would currently go undetected until someone did.
+- *=host_ui_font.dart=:54's identity branch is defensible but under-linked to
+  its own capability declaration* (§4.2) — =capabilities.dart= declares
+  =HostCapability.hostUiFont= but a reviewer cannot see from that file alone
+  that the capability is Linux-only; they have to also read the
+  implementation.
+- *No outright violation of the pattern was found inside =ui-kit-private='s
+  own tier-1 source* — the =deps-guard= grep for the four consumer files plus
+  the two-hit identity-branch grep (§4.2) were the full extent of what a
+  review needs to check, and both came back clean once examined.
+
+* Source Verification Notes
+
+** Verified claims (read directly this session, 2026-07-29)
+- All four seams' full file contents and exact line counts (§2 table) — read
+  every file listed, not inferred from the task brief or the architecture doc.
+- All six =_default.dart= consumer imports (§2) — found via
+  =grep -rn "import '.*_default\.dart'"= across =lib/src= and confirmed by
+  reading each importing file.
+- =capabilities.dart= read in full (223 lines); every structural claim in §6
+  cites a specific line range checked against the read.
+- =go/pkg/installer/install.go= and =icons.go= read in full, in this same
+  worktree; both compile within this repo (not re-verified by running =go
+  build= this session, since no Go build was requested or needed for a
+  documentation task).
+- =go-version/pkg/tools/sign.go= read in full from the sibling repo at
+  =$HOME/go/src/github.com/davidwalter0/go-version=.
+- Both =AdaptiveLayout= files (kit and task-board fork) read in full and
+  compared line by line; the "four =ref.read= writes" and "=ref.watch=
+  read" claims in the task brief were independently confirmed against the
+  actual file, not taken on trust.
+- =ui/pkg/desktop_kit= confirmed byte-identical to
+  =ui-kit-private/lib/src= via =diff -rq= across =host/=, =settings/=,
+  =theme/=, =layout/=.
+- =ui/pkg/app_kit= and =ui/cmd= confirmed empty (=.gitkeep= only) via
+  directory listing.
+- =ui-kit-private='s =Makefile= (=deps-guard=, =analyze=, =test=
+  targets) and the absence of a =.github= directory or any
+  =--platform web=/=flutter build web= step, confirmed by direct grep of the
+  Makefile and the tree.
+- The =Platform.isX=/=hostEnv.os= grep in §4.2 (exactly two non-implementation
+  hits) run directly against =lib/src=, excluding the =_io=/=_web=/=_stub=
+  files themselves.
+
+** Judgements, not measurements — flagged as such inline
+- The claim that an =implements= clause is checked by the Dart analyzer
+  per-file independent of conditional-import resolution (§3.1, Grade 1) is
+  stated as general language behaviour; =dart analyze= was not actually run
+  in this session to confirm it empirically.
+- The characterization of =host_ui_font.dart=:54's identity branch as
+  "defensible but under-linked" (§4.2, §11) is an editorial judgement about
+  documentation quality, not a defect claim.
+- §10's absence of a performance measurement is a deliberate scope limit
+  (stated in the task brief), not evidence that no cost exists either way.
+
+** Not verified
+- Whether the analyzer's actual current-version behaviour for multi-branch
+  conditional imports matches the general description in §3.1 — would require
+  running =dart analyze= (or =dart analyze --platforms web=, if that flag
+  exists in the installed SDK version) against this exact package, which was
+  out of scope for this task.
+- Whether any *other* repo among the ten/eleven apps named in the duplication
+  census independently hand-rolled a version of one of these four seams before
+  the kit existed — out of scope; would require reading each app's source,
+  not done here.
+
+* Cross-References
+- Broader framing this doc goes deeper on:
+  [[file:../../docs/architecture-and-process-design.org][architecture-and-process-design.org]] §2
+- Migration contract and gates this convention feeds into:
+  [[file:framework-subsumption-design.org][framework-subsumption-design.org]]
+- Underlying measurement of duplication across apps:
+  [[file:duplication-census.org][duplication-census.org]]
+
+* Footnotes
+[fn:1] Task-board fork read from
+=$HOME/org/ng/task-board/.worktree/feature/flutter-rewrite/flutter_app/lib/presentation/shared/widgets/adaptive_layout.dart=,
+outside this repo and outside =github.com/davidwalter0= — the project lives
+under =~/org/ng/task-board= rather than a sibling Go-path checkout.

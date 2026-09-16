@@ -1,0 +1,248 @@
+:PROPERTIES:
+:ID:       frameworks-installer-spec-and-packaging-generalization
+:END:
+#+title: Installer Spec & packaging generalization — merge, then split on the right axis
+#+date: 2026-08-30
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-08-30
+:END:
+
+** Status
+Planned, not started. Phase 1 is the gate on everything after it.
+
+** In Progress
+- [ ] Phase 1 — merge the two =Spec= types, absorb =receipt=, add the =Requires= axis
+
+** Completed
+- [X] Survey and gap analysis (this document)
+
+** Next Steps
+- [ ] Phase 1 (A1–A4)
+- [ ] Phase 2 on *textloom and mountbridge only*
+- [ ] Phases 3–4 and the four deferred repos: recorded, deliberately out of scope
+
+* Why this exists
+
+The question that started it: do consuming repos inherit the new =pkg/deps= tooling
+automatically? They do not — and measuring why exposed three problems that must be
+fixed in order.
+
+*Only three of nine repos consume =frameworks/go/pkg/installer= at all.*
+
+| repo      | pin      | installer                                  |
+|-----------+----------+--------------------------------------------|
+| voicelab | =v0.1.2= | =cmd/installer= — *94 LOC*, fork retired   |
+| waterworks  | =v0.1.0= | =cmd/waterworks-installer=, 320 LOC          |
+| beacon-sim        | =v0.1.2= | =beacon/cmd/obs-install=                 |
+
+*Six carry their own fork — ~4,600 LOC*, and they are homogeneous: each is
+=installer.go= + =installer_test.go= + =payload_with.go= + =payload_without.go=,
+doing desktop-entry + symlink + payload extraction. None does systemd or launchd
+from the installer, so one transformation applies to all of them.
+
+: cross-bridge 1208   word-bank 735   ghk / gatehub-kit 602 (BYTE-IDENTICAL)
+: netroute  615   mountbridge   456   alert-log 343
+
+=ghk= and =gatehub-kit= hold the *same file*, so six repos carry five distinct forks.
+
+*Every consumer is on a stale pin* — =v0.1.0=, =v0.1.2=, =v0.1.2= — while
+=go/v0.1.5= is published. waterworks's =v0.1.0= carries the poisoned autocfg hash.
+
+** The blocker, and it is self-inflicted
+
+=frameworks/go= now holds *two competing Spec types*:
+
+| | =pkg/installer.Spec= (3 consumers) | =pkg/spec.Spec= (absorbed from installkit) |
+|---+---+---|
+| unique | =DesktopNaming=, =CleanMode=, =CleanSubdirs=, =Launchers=, =Notes= | =Units=, =Chart=, =Kube=, =Scope=, =Tokens=, =Payload=, =Binaries= |
+| shared | =AppID=, =DesktopSource=, =IconRels=, =DisplayName=/=DesktopName= | |
+
+Neither is a superset. D-0005 *rejected this state by name*: "Split by domain, keep
+both — rejected: two Specs, two prefix defaults, two uninstall models in every
+adopting repo, permanently." The absorption commit =4f2394a= created it by copying
+installkit's packages in without reconciling them against the existing extraction.
+
+Migration cannot start until it is fixed: onboarding six repos onto an ambiguous
+target multiplies the mistake by six.
+
+* The measurement that settles the design
+
+=word-bank/scripts/package-deb.sh:124=:
+
+#+begin_example
+Depends: libgtk-3-0
+# the .deb does NOT bundle GTK — it Depends on it (the Debian idiom),
+# while the AppImage/tarball packagers DO bundle it
+#+end_example
+
+*The same logical dependency resolves differently per output format.* GTK is a
+=Depends:= line in a deb, a bundled payload in an AppImage, and absent from a static
+tarball. Neither Spec can express that, and no merge of them creates the ability —
+it is a *missing dimension*, not a missing field.
+
+The family already ships *seven artifact kinds*, all via bespoke shell: tar.gz (25
+refs), self-extractor (28), AppImage (14), dmg (11), deb (2), apk (2), aab (1).
+word-bank is the most complete at *916 lines across six scripts*.
+
+** Four axes currently conflated
+
+| axis | answers | where it lives today |
+|---+---+---|
+| *Identity* | what the app IS — appID, version, binaries, icons, desktop entry, launchers | both Specs, duplicated |
+| *Dependency resolution* | per format: bundle / declare / require-present / ignore | *nowhere* — a heredoc in one repo |
+| *Format* | deb, rpm, apk, dmg, AppImage, tarball, self-extractor + their metadata | bespoke shell per repo per format |
+| *Deployment target* | filesystem, systemd, kubernetes | =pkg/target= — already modelled well |
+
+The =installer.Spec= vs =spec.Spec= split cuts across Identity and Target arbitrarily.
+
+* Gap analysis against existing tooling
+
+| tool | covers | does NOT cover | adopted here? |
+|---+---+---+---|
+| nfpm / fpm | deb/rpm/apk metadata + assembly | bundle-vs-depend; systemd/k8s; self-extractor | fpm: 1 ref |
+| goreleaser | build + package + release | same gaps; heavy, opinionated | *1 repo* — effectively rejected |
+| linuxdeploy / appimagetool | AppImage bundling | everything else | 16 / 9 refs — genuinely used |
+| hdiutil / create-dmg | dmg assembly | everything else | 19 refs |
+| gradle / apksigner | apk / aab | everything else | 12 / 3 refs |
+| *frameworks today* | filesystem/systemd/k8s deployment, plan/dry-run, never-activates invariant, receipts | *all format metadata*, dependency resolution | 3 repos |
+
+*The gap is complementary, not overlapping.* Packaging tools own format mechanics and
+know nothing about deployment; frameworks owns deployment and knows nothing about
+formats.
+
+*So do not build a packager.* Reimplementing =dpkg-deb= / =rpmbuild= / =hdiutil= in Go
+would duplicate mature tools while adding nothing frameworks is uniquely able to say.
+Build the *Spec that feeds them*, emit their native configs, and keep frameworks'
+actual differentiators.
+
+#+begin_quote
+Tool capability claims in the table above are RECALLED, not verified. Confirm nfpm's
+current feature set before depending on it.
+#+end_quote
+
+* Design — one Spec, four sections
+
+#+begin_example
+Spec
+  Identity   appID, version, displayName, binaries, icons, desktopEntry, launchers
+  Requires   [] Dependency        # the new axis
+  Formats    map[Format]Profile   # deb: {section, priority}; dmg: {...}; apk: {...}
+  Deploy     filesystem | systemd | kubernetes   (pkg/target, unchanged)
+
+Dependency
+  name        "libgtk-3-0"
+  resolve     map[Format]Strategy   # deb: declare, appimage: bundle, tarball: ignore
+  policy      required | optional-skip | optional-degrade | best-effort   # pkg/deps
+#+end_example
+
+=resolve= and =policy= are deliberately separate: *resolution is a packaging decision,
+policy is a presence-checking decision*, and the same dependency needs both. That is
+what unifies =pkg/deps= with packaging instead of leaving two vocabularies.
+
+* Phase 1 — prove the design inside frameworks
+
+No consuming repo is touched. A Spec that turns out wrong after six migrations costs
+six re-migrations, which is the shape of every consolidation failure recorded here.
+
+- *A1* — merge the two Specs; absorb =pkg/receipt= from installkit in the same change
+  (one API disruption, not two; installkit can then retire). Identity + Deploy only.
+  =DesktopNaming= and =CleanMode= *must survive*: they encode findings, not
+  preferences — Wayland resolves the window icon from the =.desktop= *filename*, and
+  word-bank's layout change stranded files under a subtree-only clean.
+- *A2* — add the =Requires= axis with =resolve= and =policy=, even though nothing
+  consumes =resolve= yet. Modelling it now is what stops it being retrofitted.
+- *A3* — prove against the three live consumers. If the merged Spec cannot express
+  what they already do, it is wrong and Phase 2 does not start.
+- *A4* — prove =resolve= as a fixture against word-bank's real case before building
+  any emitter.
+
+* Phase 2 — prove on TWO apps: textloom and mountbridge
+
+Not a fleet migration. Chosen because they cover opposite cases, so a design flaw
+surfaces in one of them:
+
+| | textloom | mountbridge |
+|---+---+---|
+| installer | own fork, *317 LOC in its own =go.mod=* | own fork, 521 LOC, in-repo =cmd/installer= |
+| icon gallery | *not a member* — own spec + two fonts, one a 5-glyph subset | member, but ships *different* icons |
+| icon naming | one 256 + svg, =packaging/textloom.*= | app-id named, 5 sizes, =ui/icons/org.mountbridge.UI-*= |
+| generator pin | =gen-icon@v0.1.0= (superseded tag) | none — icons predate the gallery |
+
+Each app gets all three strands in ONE change, because they are downstream of the same
+Spec and splitting them means touching each repo three times:
+
+1. *installer* fork deleted, replaced by a Spec (voicelab' 94-LOC result is the template)
+2. *icon + spec* — gallery becomes the single generation point; artifacts distributed
+   with the app-id rename; provenance recorded; old icons retained only until the pixel
+   sampler confirms the new ones, then removed
+3. *dependency installation tooling* — the repo's =deps.yaml=, its =command -v= sites,
+   and the pin bumped past Phase 1's release
+
+textloom additionally forces two questions no other repo does: whether an installer in a
+*separate module* is supportable, and whether a non-member app joins the gallery or
+stays out with its reason recorded.
+
+* Deferred — recorded so the reasoning is not re-derived
+
+- *Phase 2 remainder*: alert-log (343), ghk + gatehub-kit (602, one change —
+  identical files), netroute (615), word-bank (735).
+- *Phase 3 — formats*, proven on word-bank: emit an nfpm config; assert the generated
+  =.deb= control matches the hand-written heredoc field for field *before* deleting
+  =package-deb.sh=.
+- *Phase 4 — cross-bridge*: 1208 lines, platform-split, and its 250-line
+  =installer_darwin.go= *has no target to migrate to* — frameworks has
+  filesystem/systemd/kubernetes and *no launchd*. Migrate the Linux half; the darwin
+  half waits on a decision about a launchd target (write the plist, print the
+  =launchctl= command, preserving the never-activates invariant).
+- *Independent — pin sweep + fix pin-monitor.* =consumers.yaml= is stale three ways:
+  =dep: desktop_kit= points at =ui-kit-private= (the retired copy, not frameworks),
+  it does not track =frameworks/go= at all, and mountbridge is listed on a non-=main= branch.
+
+* Anti-goals
+
+Do not reimplement dpkg-deb/rpmbuild/hdiutil. Do not migrate repos onto two Specs. Do
+not add format support before the Spec merge lands. Do not bulk-migrate — deletion is
+the gate and must be verifiable per repo.
+
+* Verification
+
+*Phase 1 gates everything.* Proven, not merely compiled:
+- =grep -c "^type Spec struct" go/pkg/*/[a-z]*.go= returns *1*
+- all three live consumers compile and pass; =make check= green; installkit's =receipt=
+  tests pass *unmodified* in their new home — they are the only reason that behaviour is
+  known to work
+- a fixture states =libgtk-3-0= resolving three ways (declare / bundle / ignore) and the
+  Spec expresses it. *If it cannot, the design is wrong and Phase 2 does not start.*
+- =TestExactlyOneExecPath= still passes over the merged tree
+
+*Phase 2*, per repo: fork deleted (not deprecated), remaining wiring ~70 lines, icon spec
+in the gallery, and a *real-artifact round trip* — install into a temp prefix, assert the
+=.desktop= and hicolor icons land under the app-id, uninstall, assert the tree is clean.
+That round trip surfaced the =index.theme= defect; unit tests did not.
+
+*Family-wide*: re-run the fork census against the ~4,600 LOC baseline, and the
+=command -v= census against the 38-repo baseline.
+
+* Glossary
+- resolve :: how a dependency is satisfied for a given output format — bundle, declare,
+  require-present, or ignore. A packaging decision.
+- policy :: what a dependency's ABSENCE means — required / optional-skip /
+  optional-degrade / best-effort. A presence-checking decision. See =go/pkg/deps=.
+- never-activates invariant :: D-0004 — an installer materializes artifacts and PRINTS
+  activation commands; it never activates. Enforced by =TestExactlyOneExecPath=.
+
+* Cross-References
+- Governing decisions: one installer library serves three deployment targets
+  (filesystem / systemd / kubernetes) and only ever materializes artifacts and
+  prints activation commands — it never activates them; and =go/pkg/installer=
+  is the canonical installer library, superseding the standalone installkit
+  fork this document's Phase 2 census tracks.
+- Prerequisite policy: =go/pkg/deps=, =deps.yaml=
+- Icon generation: [[file:icon-gallery/README.org]]
+
+* Footnotes
+[fn:measured] Every LOC count, pin, reference count and file comparison in this document
+was produced by running a tool on 2026-08-29/30, not by recall. The tool-capability table
+under "Gap analysis" is the one exception and is labelled as such.

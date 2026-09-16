@@ -1,0 +1,22 @@
+{
+  "name": "netroute-manager",
+  "palette": {
+    "preset": "slate"
+  },
+  "motif": {
+    "color": "hero",
+    "opacity": 0.9,
+    "svg": "<g fill=\"none\" stroke-width=\"7\" stroke-linecap=\"round\"><path d=\"M 128 46 L 128 88\"/><path d=\"M 128 104 Q 128 132 74 132 L 74 158\"/><path d=\"M 128 104 L 128 158\"/><path d=\"M 128 104 Q 128 132 182 132 L 182 158\"/></g><circle cx=\"128\" cy=\"96\" r=\"19\" stroke=\"none\"/><g stroke=\"none\"><rect x=\"112\" y=\"28\" width=\"32\" height=\"22\" rx=\"6\"/><rect x=\"58\" y=\"158\" width=\"32\" height=\"26\" rx=\"6\"/><rect x=\"112\" y=\"158\" width=\"32\" height=\"26\" rx=\"6\"/><rect x=\"166\" y=\"158\" width=\"32\" height=\"26\" rx=\"6\"/></g>"
+  },
+  "layers": [
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "nm",
+      "height": 44,
+      "centerX": 128,
+      "y": 228,
+      "align": "bottom",
+      "fill": "hero"
+    }
+  ]
+}

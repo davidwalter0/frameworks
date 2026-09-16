@@ -1,0 +1,275 @@
+:PROPERTIES:
+:ID:       frameworks-tranche-0-copy-report
+:END:
+#+title: Tranche 0 — desktop_kit copy report
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-08-07
+:END:
+
+** Status
+Done. desktop_kit copied verbatim into =ui/pkg/desktop_kit=; all 98 test
+files (1818 individual test cases) pass unmodified, chunked by
+=test/= subdirectory. =flutter analyze= clean, no issues.
+
+*2026-08-07 — the copy is no longer verbatim, deliberately.* Three files now
+diverge from the kit on purpose, and the reasons are recorded in
+"Intentional divergences" below so a future re-sync does not silently
+"repair" them back. The copy is level with kit =lib/= at =48af8ad=; kit
+=main= has since moved to =cb2bd98=, which touches only =.gitignore= and
+=analysis_options.yaml=, not =lib/=.
+
+** Completed
+- [X] Copy lib/ (121 files), test/ (98 files), pubspec.yaml, pubspec.lock,
+  analysis_options.yaml, Makefile from =ui-kit-private= into
+  =ui/pkg/desktop_kit/=, byte-identical (verified with =diff -rq= before
+  any tooling ran).
+- [X] =flutter pub get --offline= against the copied =pubspec.lock=
+  succeeded with zero resolution drift (lock file diffed identical
+  before/after).
+- [X] =flutter analyze= — no issues found.
+- [X] All 98 test files run in 19 chunks (by =test/= subdirectory) —
+  1818 test cases, 0 failures, 0 skips beyond the suite's own design.
+
+** Next Steps
+- None for this tranche. Parent session handles all git operations
+  (add/commit) — nothing here has been staged or committed.
+
+* Intentional divergences from the kit (added 2026-08-07)
+
+The tranche-0 contract was a byte-identical copy, and that contract has now
+been *deliberately* broken in three files. Each is listed with the reason, so
+the next re-sync reconciles rather than reverts. A divergence that is not
+written down is indistinguishable from drift.
+
+** =lib/= — still byte-identical, keep it that way
+=diff -rq= against kit =lib/= is empty and should stay empty. Everything below
+concerns the non-source files copied alongside it.
+
+** =analysis_options.yaml= — DO NOT re-sync the =exclude:= block
+Kit commit =cb2bd98= added an =exclude:= block to its own
+=analysis_options.yaml=. It exists because the KIT REPOSITORY contains
+untracked symlinks to four sibling repos, and =flutter analyze= follows
+symlinks — so without the exclusion the kit's gate reported on five projects
+and attributed all of it to the kit (11,156 errors from siblings on
+2026-08-01, per that commit's own message).
+
+=ui/pkg/desktop_kit= has *zero* symlinks (verified: =find -maxdepth 1 -type l=
+returns none). The block is therefore inert here, and copying it would import
+a workaround for a problem this location does not have. Left out on purpose.
+
+If the frameworks copy ever gains sibling symlinks, revisit — but the fix then
+is to not add the symlinks.
+
+** =Makefile= — dead and BROKEN targets removed
+As copied, =check= depended on =analyze-example=, =test-example= and
+=orgsupport-check=, which =cd example= and =$(MAKE) -C tools/orgsupport=.
+Neither directory was copied (both were excluded from tranche 0 by design), so
+the target did not merely reference dead paths — it FAILED on a missing
+directory for anyone who ran it. Upstream has since retired =example/= outright
+(kit =936e0bf=), so this is not a divergence that will need reconciling.
+
+The package Makefile no longer defines =check= at all. =frameworks/ui/Makefile=
+is the single gate; two gates that can disagree is worse than one.
+
+** =vuln= / =deps-guard= — moved UP, not deleted
+Both existed in the kit's Makefile and *neither survived the copy* — so from
+tranche 0 until 2026-08-07 the Dart half of frameworks had no dependency guard
+and no vulnerability stage at all. That was a capability regression introduced
+by the move itself rather than by any code change, and it is exactly the class
+of loss a "verbatim copy" is assumed to make impossible.
+
+They now live once in =frameworks/ui/Makefile= and run over every package:
+- =deps-guard= is the kit's grep verbatim, but scoped via =AGNOSTIC_PACKAGES=
+  so the app-shell tier (=ui/pkg/app_kit=, not yet built) can carry Riverpod by
+  design without the guard having to be deleted. Whether the guard should be
+  *inverted* to require Riverpod 3 is mgmt todo =bd91e7e9= — a design decision,
+  not a copy fix, and deliberately not taken here.
+- =vuln= is now gated by =ui/tools/osv-gate.sh=. The kit's version ran
+  =osv-scanner --lockfile=pubspec.lock || true=; the =|| true= made it a
+  reporter that could not fail. The replacement fails on findings that are at
+  or above CVSS 7.0 AND have a fix available, and reports the rest.
+
+* Task
+mgmt todo =4e934216=, tranche 0 of the frameworks consolidation: copy
+=ui-kit-private= into =frameworks/ui/pkg/desktop_kit= VERBATIM and
+prove the copy is faithful by getting all of its tests green
+UNMODIFIED.
+
+* File Counts — copied vs. source
+
+| Set                        | Source count | Copied count | Match |
+|-----------------------------+--------------+--------------+-------|
+| lib/ files (all *.dart)    |          121 |          121 | ✓     |
+| lib/ top-level (barrels+meta) |         23 |           23 | ✓     |
+| lib/src/ files              |           98 |           98 | ✓     |
+| test/ files (*_test.dart)  |           98 |           98 | ✓     |
+
+=diff -rq= between the source =ui-kit-private/lib= and
+=ui-kit-private/test= trees and the copied
+=ui/pkg/desktop_kit/lib= / =ui/pkg/desktop_kit/test= trees produced
+**zero** differences — every file is byte-for-byte identical to the
+source. No lib or test file was omitted, added, or altered.
+
+Non-lib/test files copied alongside, also byte-identical
+(=diff -q= confirmed for each before any tooling touched them):
+- =pubspec.yaml=
+- =pubspec.lock=
+- =analysis_options.yaml=
+- =Makefile=
+
+No =dart_test.yaml= exists at the source repo root (only under
+=example/=, which is out of scope per the task's exclusion list), so
+none was copied. No non-=.dart= fixture files exist under =lib/= or
+=test/= in the source (confirmed with =find ... ! -name "*.dart"=,
+empty result both places) — the tree is pure Dart source, nothing to
+carry separately as a "fixture."
+
+* Adjustments made
+
+**None.** Every copied file — =pubspec.yaml=, =pubspec.lock=,
+=analysis_options.yaml=, =Makefile=, every file under =lib/= and
+=test/= — is byte-for-byte identical to its source counterpart. No
+edit was required:
+
+- =pubspec.yaml='s =name:= is already ~desktop_kit~, matching the new
+  directory name, so no rename was needed.
+- No local =path:= or =git:= dependencies exist in =pubspec.yaml= or
+  =pubspec.lock= that reference the old repo's location (checked via
+  grep across both files) — the only ~path:~ hit in the lock file is
+  the transitive ~path~ *package*, unrelated to dependency source
+  type.
+- =flutter pub get --offline= resolved from the copied lock file with
+  zero drift: =diff -q= on =pubspec.lock= before and after the ~get~
+  was empty.
+
+* Supplementary files copied beyond the explicit list (not adjustments)
+
+The task's explicit copy list was =lib/=, =test/=, =pubspec.yaml=,
+=analysis_options.yaml=, plus any =dart_test.yaml=/fixtures (none
+existed). Two additional files were copied, verbatim, to satisfy the
+"drive tests through the project's Makefile, not bare flutter/dart
+commands" convention and to pin dependency resolution exactly:
+
+- =pubspec.lock= — copied so =flutter pub get= reproduces the exact
+  dependency graph the source suite was last verified against, rather
+  than re-resolving float versions that could introduce
+  copy-unrelated failures. Confirmed unchanged by pub get (see above).
+- =Makefile= — copied verbatim so =make get=/=make analyze= could be
+  used per the build-tools convention. Its =check=/=test-example=/
+  =orgsupport-check= targets reference =example/= and
+  =tools/orgsupport=, neither of which was copied (excluded by the
+  task); those targets were never invoked. Only =make get= and
+  =make analyze= were run from it, both of which operate purely on
+  the copied =lib/=/=pubspec.yaml=/=analysis_options.yaml= and were
+  unaffected by the missing =example/=/=tools/= directories.
+
+Neither file required modification.
+
+* Test execution — chunking strategy and results
+
+** Why chunked
+Todo =b4749c15= recorded an OOM from running ~2656 tests in one
+=flutter test= invocation across the wider suite. Per the task's
+mandatory memory-hazard guidance, the 98 test files here were run in
+19 separate =flutter test <dir>= invocations, one per =test/=
+subdirectory (plus one for the single root-level
+=test/smoke_test.dart=), rather than one whole-=test/= invocation.
+Each invocation was wrapped in =timeout 600= (self-terminating, no
+kill needed — every chunk finished well inside that budget) and
+measured with =/usr/bin/time -v= for wall-clock and peak RSS.
+
+** Results per chunk
+
+| Chunk (test/<dir>) | Files | Test cases | Wall clock | Peak RSS (kB) | Result |
+|---------------------+-------+------------+------------+---------------+--------|
+| smoke_test.dart      |     1 |          1 | 0:32.37    |        646252 | ✓ pass |
+| about                |     1 |          8 | 0:08.16    |        439728 | ✓ pass |
+| anthy                |     8 |         78 | 0:09.59    |        443000 | ✓ pass |
+| anthy_keymap         |     1 |         17 | 0:04.52    |        439924 | ✓ pass |
+| clipboard            |     5 |         37 | 0:09.85    |        449064 | ✓ pass |
+| config               |     3 |         65 | 0:06.07    |        438292 | ✓ pass |
+| editor               |    19 |        358 | 0:22.22    |        452296 | ✓ pass |
+| elisp_eval           |     1 |         16 | 0:10.55    |        436164 | ✓ pass |
+| kana                 |     3 |        348 | 0:11.75    |        437928 | ✓ pass |
+| kana_keymap          |     1 |          9 | 0:07.22    |        450256 | ✓ pass |
+| keymap               |    23 |        371 | 0:45.32    |        457332 | ✓ pass |
+| layout               |     2 |         14 | 0:05.22    |        442572 | ✓ pass |
+| ordered_match        |     1 |         12 | 0:03.17    |        423976 | ✓ pass |
+| org_edit             |     4 |         87 | 0:03.89    |        431508 | ✓ pass |
+| settings             |     5 |         55 | 0:11.54    |        461368 | ✓ pass |
+| status               |     1 |          9 | 0:04.44    |        440452 | ✓ pass |
+| syntax               |     2 |         54 | 0:03.87    |        436588 | ✓ pass |
+| theme                |    13 |        228 | 0:28.67    |        447808 | ✓ pass |
+| version              |     1 |         13 | 0:05.68    |        418196 | ✓ pass |
+| widgets              |     3 |         38 | 0:16.08    |        438316 | ✓ pass |
+|----------------------+-------+------------+------------+---------------+--------|
+| *TOTAL*              |  *98* |     *1818* | *~4m10s*   | max *646252*  | *0 failures* |
+
+Every chunk reported "All tests passed!" — zero failures, zero
+unexpected skips, across all 98 files / 1818 individual test cases.
+=kana_keymap='s first attempt was cut short by the orchestrating
+shell's own 2-minute default timeout mid-run ("No tests ran"); it was
+simply re-run to completion (0:07.22, 9/9 passed) — this was a
+harness-side interruption of the *runner*, not a test failure, and no
+test file was touched.
+
+** No test edited
+No test file under =ui/pkg/desktop_kit/test= was modified, renamed, or
+skipped to make this pass. All 98 files ran exactly as copied.
+
+** Blockers
+None. Nothing required modification to pass.
+
+* Performance — measured only
+
+- **Wall-clock**: summed across the 19 chunk invocations (each restarts
+  the Dart test-runner VM, so this includes per-chunk startup
+  overhead, not just test-body time), total measured wall-clock was
+  ~250s (~4m10s) for 98 files / 1818 test cases. Largest single chunks
+  were =keymap= (45.3s / 371 cases / 23 files) and =theme= (28.7s / 228
+  cases / 13 files); smallest was =ordered_match= (3.2s / 12 cases / 1
+  file).
+- **Peak RSS**: measured via =/usr/bin/time -v= per chunk. All chunks
+  after the first landed in a narrow 418–461 MB band. The first chunk
+  run (=smoke_test.dart=) measured 646 MB peak RSS — highest of all 19
+  — attributable to one-time analyzer/JIT/pub warm-up on the first
+  invocation in a fresh =.dart_tool= cache; every subsequent chunk in
+  the same session measured well below it. No chunk approached a level
+  that would indicate OOM risk; the largest observed value (646 MB) is
+  still small relative to typical container/host memory budgets, and
+  well below what running the full ~2656-test wider-suite invocation
+  from todo =b4749c15= evidently required.
+- Not measured: CPU time, disk I/O beyond what =/usr/bin/time -v=
+  reports in the raw logs (retained under =/tmp/tranche0-logs/= for
+  this session, not committed — ephemeral, not part of the owned
+  paths).
+
+* Verification method summary
+
+1. =diff -rq= source vs. copied =lib/= and =test/= trees → 0 differences.
+2. =diff -q= per non-lib/test file (pubspec.yaml, pubspec.lock,
+   analysis_options.yaml, Makefile) → 0 differences.
+3. =make get= (=flutter pub get --offline=) → resolved cleanly, lock
+   file unchanged.
+4. =make analyze= (=flutter analyze=) → "No issues found! (ran in
+   12.3s)".
+5. 19× =flutter test test/<subdir>= (chunked per the memory-hazard
+   guidance) → 98/98 files, 1818/1818 test cases, 0 failures.
+
+* Source Verification Notes
+
+** Verified Claims
+- All file counts (121 lib files, 98 test files, 1818 test cases, all
+  chunk timings and peak-RSS figures): ✓ directly measured in this
+  session via =find=, =diff=, and =/usr/bin/time -v= against the
+  actual copied/source trees and actual test runs — not estimated.
+- Flutter/Dart toolchain version (3.44.2 / 3.12.2): ✓ confirmed via
+  =flutter --version= at the start of this session, matching the
+  versions stated in the task brief.
+
+** Estimated Claims
+- None. Every quantitative figure in this report was measured in this
+  session; nothing here is an estimate.

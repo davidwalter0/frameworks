@@ -1,0 +1,25 @@
+{
+  "results": [
+    {
+      "source": { "path": "pkg/desktop_kit/pubspec.lock", "type": "lockfile" },
+      "packages": [
+        {
+          "package": { "name": "minor_pkg", "version": "3.1.0", "ecosystem": "Pub" },
+          "vulnerabilities": [
+            {
+              "id": "GHSA-fixable-low",
+              "affected": [
+                {
+                  "ranges": [
+                    { "type": "SEMVER", "events": [ { "introduced": "0" }, { "fixed": "3.1.1" } ] }
+                  ]
+                }
+              ]
+            }
+          ],
+          "groups": [ { "ids": [ "GHSA-fixable-low" ], "max_severity": "3.7" } ]
+        }
+      ]
+    }
+  ]
+}

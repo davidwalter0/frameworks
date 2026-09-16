@@ -1,0 +1,390 @@
+:PROPERTIES:
+:ID:       frameworks-gomobile-embedding-option
+:END:
+#+title: The gomobile embedding option — continuing with Go + Dart on mobile
+#+date: 2026-09-04
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-09-04
+:END:
+
+** Status
+Written up from *two shipping in-family precedents*, both re-verified today, not
+from the =shared-buffer-information/= material. Companion to
+[[file:shared-buffer-information-evaluation.org]] §6 and to the research plan in
+[[file:research-todo-gomobile-shm-atomics.org]].
+
+** Completed
+- [X] Verified both in-family gomobile bindings still exist and read their
+  actual exported surfaces
+- [X] Extracted gobind's type envelope from the code's own documentation
+- [X] Established the platform constraint that forces in-process Go on Android
+- [X] Reconciled this with the evaluation's §6.5 finding (separate process + shm)
+
+** Next Steps
+- [ ] The investigations in [[file:research-todo-gomobile-shm-atomics.org]], R3–R5 especially
+- [ ] Decide whether the two patterns below should converge on Pattern A
+
+* 1. Why this option exists at all
+
+=gomobile bind= compiles Go into a platform-native archive — =.aar= for Android,
+=.xcframework= for iOS — and generates Java/Kotlin and Objective-C bindings so the
+host app calls Go as ordinary platform code. It is the *supported* way to run Go
+inside a mobile app, and on Android it is effectively the only one that does not
+require hand-rolling a JNI layer.
+
+*The constraint that makes it necessary is measured and in-family*, from
+=voicelab/docs/android-gomobile.org:47=:
+
+#+begin_quote
+"Android sandboxes apps — no =PATH=, no exec'ing a system binary"
+#+end_quote
+
+That single sentence removes the desktop pattern from mobile. On desktop the Go
+side is a *separate process* the app spawns; on Android an app cannot exec a
+binary it did not link. Whatever Go code runs on mobile must therefore run
+*inside the app process*, and gomobile is the sanctioned way to put it there.
+
+(That record is dated 2026-06-28. It is a recorded claim about a platform, and
+platform policy moves; it is load-bearing enough that R4 in the research plan
+re-checks it rather than inheriting it.)
+
+* 2. gobind's type envelope — the real constraint
+
+The binding layer marshals a *narrow* set of types. From =ttsmobile.go='s own
+package documentation, which is the most accurate statement of it in the family:
+
+#+begin_quote
+"gobind only marshals a narrow set of types across the JNI boundary: string,
+=[]byte=, bool, int, int64, float64, error, and bound struct/interface pointers.
+It does NOT support maps, slices-of-structs, or channels in an exported
+signature."
+#+end_quote
+
+And the consequence the =shared-buffer-information/= material got *right* — the
+one claim of its worth keeping: *raw memory pointers are not in that list.* A
+payload crossing a gomobile boundary is copied, by construction. There is no
+=gomobile bind= arrangement that yields a zero-copy shared buffer.
+
+So the design question on mobile is never "how do I make gomobile zero-copy". It
+is *"how much data should cross the gomobile boundary at all?"* — and this family
+has answered it two different ways, both in production.
+
+* 3. Two shipping patterns, and they are genuinely different
+
+** Pattern A — gomobile as a LAUNCHER only (=notekeep=)
+
+=notekeep/mobile/notekeep.go=, 107 lines, *two* exported functions:
+
+: func StartService(filesDir string) (string, error)
+: func StopService()
+
+That is the entire bound surface. No data crosses it. From its own doc comment:
+
+#+begin_quote
+"exposes a single function, StartService, that the Flutter layer calls via the
+generated Java/Kotlin binding to start the JSON-RPC service listening on a
+Unix-domain socket inside the app's filesDir. … The Dart SocketNotekeepClient
+connects to that socket path, *so the transport is identical to the desktop case
+— no per-platform Dart fork required.*"
+#+end_quote
+
+*This is the important idea in the whole document.* gomobile is used only to
+*start* the Go service; the data rides a Unix-domain socket that Dart speaks the
+same way on every platform. The copy problem is not solved — it is *made
+irrelevant*, because gomobile never carries a payload.
+
+The cost is one platform integration detail: =StartService= must be called from
+=MainActivity.onCreate= before the Flutter engine connects, and =StopService=
+from =onDestroy=.
+
+** Pattern B — gomobile as the API SURFACE (=voicelab=)
+
+=voicelab/mobile/ttsmobile/ttsmobile.go=, 804 lines, *20* exported functions —
+=Engines=, =Voices=, =ConfigGet=/=ConfigSet=, =Render=, =ProfileAddJSON=, and so
+on. It stays inside gobind's envelope deliberately:
+
+#+begin_quote
+"every 'list/get' call returns a JSON STRING (the same bytes =voicelab <cmd> --json=
+prints), and the one binary call — Render — returns the rendered WAV as
+=[]byte=. Dart decodes the JSON exactly as it already does for the CLI, so the
+Phase-3 MethodChannel reuses the existing =models.dart= parsers unchanged."
+#+end_quote
+
+The trick is the same one Pattern A uses at a different level: *mirror a contract
+Dart already parses*. Here it is the CLI's =--json= output rather than a socket
+protocol, so the mobile path reuses the desktop parsers.
+
+** Choosing between them
+
+| | Pattern A — launcher | Pattern B — API surface |
+|-+----------------------+-------------------------|
+| bound surface | 2 functions | 20 functions |
+| data path | Unix socket, JSON-RPC | JNI call returning JSON string / =[]byte= |
+| per-call cost | socket round trip | JNI marshal + copy |
+| desktop/mobile divergence | *none* — same Dart client | a =MobileBackend= implementing the CLI seam |
+| binding churn as the API grows | *none* | every new call is a new bound function |
+| best when | the service is long-lived and chatty | the call set is small, stable, request/response |
+
+*Recommendation: Pattern A by default.* It keeps one transport across all
+platforms, so the Dart side has no mobile fork, and the bound surface stops
+growing. Pattern B earns its place where a *long-lived service is the wrong
+shape* — voicelab is genuinely request/response and its 20 calls mirror an
+existing CLI contract, so the JNI surface is a translation of something stable
+rather than a second API.
+
+The two are not in conflict, but *a new integration should start at A* and move
+to B only with a reason.
+
+** Note on volume
+Neither pattern makes gomobile carry bulk data. Pattern A never does; Pattern B
+does exactly once (=Render= → WAV =[]byte=), which is a single copy of an
+opaque blob — the =4b.3= "passes bytes through" case, where a copy is cheap and
+parsing is absent. *That is the boundary to hold:* if a design finds itself
+wanting to stream or page data across gomobile, that is the signal to switch to
+Pattern A, not to widen the binding.
+
+* 3b. Is there in-process memory sharing, or is it only RPC? *[MEASURED]*
+
+Asked directly, and it is the right question — the answer decides whether §4's
+conclusion is forced or merely conventional.
+
+*Through the binding: it is all copying — and Pattern B copies twice.* But the
+runtimes do share an address space, and there is a documented-by-construction way
+to exploit it that gobind does not advertise.
+
+** What gobind actually binds — from the generator, not the docs
+
+Ran =gobind -lang=java= over a probe package (=gomobile= and =gobind= are
+installed here, =~/go/bin/=). Generated Java:
+
+: public static native byte[] blob(byte[] b);
+: public static native long   bufferAddress();
+: public static native String echo(String s);
+: public static native long   fillAt(long addr, long length);
+: public static native boolean flag(boolean b);
+
+Three probe functions are *absent*: =TakesPointer(unsafe.Pointer)=,
+=TakesMap(map[string]string)=, =TakesStructs([]struct{...})=.
+
+Two findings, and the second is a hazard nobody mentions:
+
+1. *Confirmed: no pointer type crosses gobind.* The type envelope in §2 is real
+   and enforced by omission.
+2. *Unsupported functions are dropped SILENTLY.* =gobind= exited *0* and its log
+   was *empty* — no warning, no note, nothing. An exported Go function with an
+   unsupported signature simply is not in the generated class, and you discover
+   it at the Kotlin call site as a missing method. *Check the generated bindings
+   for what is missing, not just for what is present.*
+
+** The copy count is worse than "one boundary"
+
+Pattern B's data path is *two* serialisation boundaries, not one:
+
+: Dart --[MethodChannel: StandardMessageCodec]--> Kotlin --[JNI/gobind]--> Go
+
+The first is a genuine copy: =StandardMessageCodec.encodeMessage= writes into a
+=WriteBuffer=, and a =Uint8List= goes through =buffer.putUint8List(value)=
+(=flutter/lib/src/services/message_codecs.dart:431-433=). The second is gobind's
+JNI marshalling. So a byte array handed from Dart to Go is copied twice, in a
+single address space.
+
+Pattern A has one boundary — the Unix socket — but note the irony: *the socket
+round-trips through the kernel between two parties in the same process.*
+
+** The loophole: an address is a number, and gobind carries numbers
+
+=fillAt(long addr, long length)= is bound. gobind refuses a =*byte=; it has no
+opinion about an =int64= that happens to be an address. So:
+
+: Dart: calloc<Uint8>(n)  ->  p.address (an int)  ->  gobind long  ->
+: Go:   unsafe.Slice((*byte)(unsafe.Pointer(uintptr(addr))), n)
+
+Verified end to end on desktop (=c-shared=, which is the same mechanism minus the
+JNI hop), *both directions*:
+
+: Dart allocated at 0x716e18016a10
+: FillAt returned 32; Dart sees: "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF"
+:   -> Go wrote in place, Dart read in place, no marshalling
+:
+: Go allocated at 0x716e18016930   (C.malloc, address returned as int64)
+: Dart reads Go-supplied address: "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF"
+
+*So genuine zero-copy in-process sharing is achievable with gomobile.* It works
+*around* gobind's type system rather than through it, and it is only meaningful
+because the two runtimes are in one process (evaluation F4b: same PID).
+
+** Why this is a loophole and not a recommendation
+
+Four costs, one of them mechanical:
+
+1. *=go vet= fails it.* Measured: =probe.go:13:15: possible misuse of
+   unsafe.Pointer=, exit *1*. Adopting this means suppressing a check that exists
+   for exactly this conversion — a standing, visible cost, which is the honest
+   form for it to take.
+2. *The memory must not be Go-heap.* Go's GC may collect it and the cgo pointer
+   rules forbid handing out interior pointers. It must be =C.malloc= or
+   Dart-=calloc= memory. *The Dart-allocates direction is the safer one* — the
+   buffer sits outside both GCs and Dart owns the lifetime.
+3. *Nothing checks the address.* An =int64= parameter accepts any number. A stale
+   or wrong value is a wild pointer, which is the *unrecoverable* fault class
+   (evaluation F4) — =recover()= will not save the app. This is the hazard the
+   whole boundary is prone to, now with the type system explicitly disabled.
+4. *It reintroduces every problem §6 of the evaluation catalogued* — manual
+   lifetime, no synchronisation (Dart still has no atomics), and a hand-managed
+   arena — for a saving that has never been measured against Pattern A.
+
+*Verdict: available, not advisable by default.* It is the right tool for exactly
+one shape — a large opaque blob that Go produces and Dart only reads, where the
+copy is genuinely the cost (the =Render= → WAV case is the in-family candidate).
+For anything with structure or a stream, Pattern A remains the answer, and per
+C1 Dart should still not participate in a protocol.
+
+*And it does not rescue §4's conclusion.* This gives in-process sharing on
+mobile; it does not give a *second process*, so fault isolation stays desktop-only.
+
+* 4. How this interacts with the shared-memory question
+
+[[file:shared-buffer-information-evaluation.org]] §6.5 established, by measurement,
+that the best shape for a shared ring is *a separate process, POSIX shm, and
+C11 atomics* — it satisfies real synchronisation (F2), a correct protocol (C6)
+and fault isolation (C7) at once, demonstrated with a producer crashing on
+SIGSEGV while the Dart consumer read on.
+
+*That shape is desktop-only, and §2's constraint is why.* An Android app cannot
+spawn the separate process. So:
+
+| | desktop | mobile |
+|-+---------+--------|
+| separate Go process | *yes* — spawn it | *no* — sandbox forbids exec |
+| shm + atomics ring | *yes* — the §6.5 design | *only in-process*, where shm is unnecessary |
+| fault isolation | *yes* | *no* — Go shares the app process either way |
+| gomobile | not needed | the sanctioned entry point |
+
+Two consequences worth stating plainly:
+
+1. *Fault isolation is a desktop-only property.* On mobile the Go runtime lives
+   in the app process whichever route is taken, so a Go fatal error takes the UI
+   with it, and the F4b signal-table union applies. =recover()= at every bound
+   entry point is therefore *more* important on mobile, not less — it is the only
+   containment available. (And it still does not catch the fault class; see the
+   evaluation's F4.)
+2. *In-process makes shm pointless but atomics still relevant.* Inside one
+   process there is no need to *share* memory — it is already shared. What would
+   remain useful is the C11 atomics shim, if Dart ever had to read a buffer Go
+   was concurrently writing. But per C1 the better answer is still that Dart
+   should not participate: let Go hand over a finished buffer.
+
+*So the honest summary for mobile is: the elegant design does not transfer, and
+the pragmatic one already ships.* Pattern A gives a Unix socket that behaves
+identically on both, which is worth more than a zero-copy ring that only works on
+one.
+
+* 5. What this option costs
+
+Recorded so the choice is made with eyes open, from the two precedents:
+
+- *A build step per platform.* =gomobile bind -target=android/arm64,android/amd64=
+  producing an =.aar= that must be wired into Gradle (=flatDir= repo,
+  =implementation(fileTree(...))=), and the iOS equivalent into Xcode.
+- *A toolchain dependency:* =gomobile= itself plus =gomobile init=, and the NDK
+  for Android.
+- *Binary size.* The Go runtime ships in the app. Not measured here — R6 in the
+  research plan.
+- *A platform integration point* that Flutter cannot express: Pattern A needs
+  =MainActivity.onCreate=/=onDestroy= hooks, i.e. Kotlin, not Dart.
+- *Engine/dependency viability must be assessed per feature.* voicelab had to
+  build an on-device viability matrix because anything that shells out
+  (=external=, =piper=, =say=, the gcloud auth fallback) is dead in the sandbox,
+  and its wrapper *rejects* those up front. Any Go code moved to mobile needs the
+  same audit: *pure Go survives; anything that execs does not.*
+
+* 6. Recommendation
+
+1. *Keep gomobile as the mobile route for Go.* It is sanctioned, it ships here
+   twice, and the sandbox leaves no alternative.
+2. *Default to Pattern A* — gomobile starts the service, a Unix-domain socket
+   carries the data, the Dart client is identical on every platform. Reach for
+   Pattern B only for a small, stable, request/response surface that mirrors an
+   existing contract.
+3. *Do not pursue a gomobile zero-copy shared buffer.* It is excluded by gobind's
+   type envelope, and the material that proposed it acknowledged as much.
+4. *Treat §6.5's shm design as a desktop optimisation*, adopted only if the
+   evaluation's §6.3 gate is passed, and never as the cross-platform answer.
+5. *Mandate =recover()= at every bound entry point on mobile*, since it is the
+   only containment available there.
+6. *Run R3–R5* before assuming any of the shared-memory machinery composes with
+   gomobile at all — the premise that a C atomics shim and a gomobile =.aar= can
+   coexist and agree is *plausible and unproven*.
+
+* 7. Source Verification Notes
+
+** Verified — 2026-09-04, by reading the current source
+- =notekeep/mobile/notekeep.go= exists, 107 lines, exactly *2* exported functions
+  (=StartService=, =StopService=) — =grep -cE '^func [A-Z]'=. The socket/JSON-RPC
+  description and the "transport is identical to the desktop case" quote are from
+  its own package doc comment.
+- =voicelab/mobile/ttsmobile/ttsmobile.go= exists, 804 lines, *20* exported
+  functions, listed by the same grep. The gobind type-envelope quote and the
+  JSON-string rationale are from its package doc comment.
+- =voicelab/docs/android-gomobile.org:47= carries the "Android sandboxes apps —
+  no =PATH=, no exec'ing a system binary" statement, and the doc's
+  engine-viability matrix rejects =external=/=piper=/=say=/voicevox on that basis.
+
+*A correction made while writing this:* the path recorded in
+=flutter-concurrency-and-paging.org= §4b.4(c) is =voicelab/mobile/ttsmobile.go=;
+the file is actually at =voicelab/mobile/ttsmobile/ttsmobile.go=. I briefly
+concluded the file had been deleted and that "proven twice" had decayed to once.
+*It had not* — the path was one directory short. Both precedents stand. Recorded
+because the wrong conclusion was reached first, and a "this file is gone" finding
+is exactly the kind that gets believed without a second look.
+
+The same §4b.4(c) describes voicelab as "an 18-method =MethodChannel=". The Go
+side now exports *20* functions. Close enough to be the same system, but the
+number has moved — treat counts in that doc as of its date.
+
+** Judgement, not measurement
+- The Pattern A / Pattern B comparison table's cost rows (per-call cost, binding
+  churn) are reasoned from the two designs, *not benchmarked*. No JNI or socket
+  round-trip was timed.
+- The recommendation to default to Pattern A follows from the
+  no-per-platform-Dart-fork property, which is documented in notekeep and not
+  independently measured.
+
+** Not verified — routed to the research plan
+- *Everything about iOS.* Both precedents are Android. notekeep's doc says
+  "(and iOS, if ever needed)", i.e. the iOS path is *aspirational in this family*,
+  not shipped. No iOS claim here rests on an in-family artifact.
+- Whether a gomobile =.aar= and a separately-built C =.so= can be loaded into one
+  app and agree on shared memory (R3).
+- Android's actual shm surface (=/dev/shm=, ashmem, =memfd_create=) — asserted
+  nowhere in this document precisely because it is unverified (R4).
+- Binary-size cost of embedding the Go runtime (R6).
+- That the 2026-06-28 sandbox record still holds (R4).
+
+* Glossary
+- gomobile bind :: the Go tool that emits =.aar=/=.xcframework= plus generated
+  Java/Kotlin/ObjC bindings, letting a mobile app call Go as native code.
+- gobind :: the binding generator inside gomobile; its type envelope is the
+  constraint that shapes every design here.
+- Pattern A / Pattern B :: launcher-only vs API-surface uses of gomobile, §3.
+
+* Index
+- Why mobile cannot use the separate-process design → §1, §4
+- gobind's type envelope → §2
+- notekeep (launcher + Unix socket) → §3 Pattern A
+- voicelab (20 bound calls, JSON strings) → §3 Pattern B
+- Desktop/mobile capability table → §4
+- Costs of the option → §5
+
+* Cross-References
+- Evaluation and the design disposition: [[file:shared-buffer-information-evaluation.org]] §6
+- The open investigations: [[file:research-todo-gomobile-shm-atomics.org]]
+- Prior in-family position: [[file:flutter-concurrency-and-paging.org]] §4b.4
+- Session: [[file:sessions/2026-09-04-docs-shared-buffer-evaluation.org]]
+
+* Footnotes
+[fn:counts] Exported-function counts are =grep -cE '^func [A-Z]'= over the
+package file, run 2026-09-04. That counts exported *functions*, which is what
+gobind binds; it does not count methods on bound types.

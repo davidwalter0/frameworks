@@ -1,0 +1,422 @@
+:PROPERTIES:
+:ID:       frameworks-flutter-concurrency-and-paging
+:END:
+#+title: Flutter concurrency and paging — aligning three laziness boundaries
+#+date: 2026-07-30
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-30
+:END:
+
+** Status
+Design surface. Companion to [[file:transport-design-surface.org]] §5b, which
+established that client decode placement is the family's dominant concurrency
+constraint. This document covers what to build about it.
+
+** Completed
+- [X] The three-boundary framing, with measured alignment per app
+- [X] The anti-pattern instance, verified
+- [X] Flutter's actual concurrency model and its traps
+- [X] Proposed tooling surface + correctness hazards
+
+** Next Steps
+- [ ] Measure frame time on a large mountbridge directory before building anything
+- [ ] Decide whether the paging contract is Tier-A (transport) or its own package
+
+* 1. Three laziness boundaries, and they must agree
+
+Any pipeline that shows a large collection has three places it can be lazy:
+
+| # | boundary | the question | eager failure |
+|---+----------+--------------+---------------|
+| B1 | *storage / backend* | can the source return a window, or only everything? | full-table scan per view |
+| B2 | *transport* | does the wire carry a page or the whole set? | full buffer, and head-of-line blocking behind it |
+| B3 | *UI* | does the widget materialize all rows, or only visible ones? | N widgets built to show 20 |
+
+*Laziness is only as good as its eagerest boundary.* A lazy widget over a fully
+buffered transport still decoded everything. A paged API feeding a widget that
+materializes the full list still holds it all in memory. Getting one right and
+two wrong buys nothing — and that is the family's current state.
+
+* 2. Measured alignment — nobody has all three
+
+| app | B1 storage | B2 transport | B3 UI | aligned? |
+|-----+------------+--------------+-------+----------|
+| *mountbridge* | *✓ lazy* — pin/implicit pools, content deferred until pinned | ✗ per-call D-Bus, no windowing | ✗ 1,635-line file manager, *0 of 26 files use isolates* | *B1 only* |
+| *alert-log* | ✗ *no =limit=/=offset=/=cursor= anywhere in =pkg/api/=, =pkg/sink/=, =pkg/model/=* | ✗ full set | ~ =paginated_sortable_table= 981 lines — but =itemCount: items.length= over a materialized list | *none* |
+| voicelab | ? | ✗ subprocess+JSON, full result | ~ ListView.builder in places | — |
+| word-bank | ? | ✗ subprocess, full result | ~ | — |
+
+** 2.1 The verified anti-pattern
+
+=alert-log= is the clean instance and it is worth stating precisely,
+because the naming actively misleads:
+
+- The widget is called =PaginatedSortableTable= (981 lines) and it *does* page —
+  for *display*.
+- Its data arrives as =final List<...> items= and it renders =itemCount:
+  items.length=.
+- The Go side has *no paging primitive at all* — no =limit=, =offset= or
+  =cursor= in =pkg/api/=, =pkg/sink/= or =pkg/model/=.
+
+So the full record set crosses the wire, deserializes *on the UI isolate*,
+materializes in memory, and *then* gets paginated for display. The pagination is
+cosmetic. Every cost the paging was supposed to avoid has already been paid by
+the time it runs.
+
+This is not a criticism of that widget — it is a *boundary misalignment*, and
+the widget is the only one of the three boundaries anyone implemented.
+
+** 2.2 mountbridge already solved B1, and it is the in-family reference
+
+=internal/pin/registry.go= (326 LOC) states the model explicitly:
+
+- an *explicit pin pool* — files the user requested, never auto-evicted
+- an *implicit pool* — everything else, evictable
+- =Unpin= moves a file from explicit back to implicit rather than deleting
+- and at =registry.go:138=, *"the 'lazy' pin mode: the file is marked … without
+  downloading its content"*
+
+Metadata is cheap and eager; content is expensive and deferred until asked for.
+That is exactly the right B1 shape, and it generalises directly: a directory
+listing is metadata, file bytes are content; a log index is metadata, log bodies
+are content; a mail header list is metadata, message bodies are content.
+
+*The design work is to extend that model up through B2 and B3, not to invent it.*
+
+* 3. Flutter's concurrency model — what tooling must account for
+
+Stated because most of the traps below are counter-intuitive and at least one
+makes the obvious fix *slower*.
+
+| fact | consequence |
+|------+-------------|
+| One event loop per isolate; =async=/=await= is *cooperative scheduling, not parallelism* | an =await=-heavy decode still blocks the frame; async is not a fix for CPU work |
+| =Isolate= has a *separate heap*; messages are *copied* | passing a large object graph costs a full copy each way |
+| *=compute()= copies BOTH argument and result* | for a big =Map=, that is two deep copies — often *worse* than decoding inline |
+| =TransferableTypedData= transfers byte buffers *zero-copy* | send *bytes* to the worker, decode there, return a *compact* result |
+| Isolate spawn has real cost (~ms) | per-call =compute()= on small payloads is net negative; long-lived workers win |
+| =dart:io= file/socket ops already run off the UI isolate | *I/O is not the jank source — decoding is* |
+| Platform channels historically main-isolate only; =BackgroundIsolateBinaryMessenger= (3.7+) lifts this | a worker *can* now use channels, but must be wired deliberately |
+| Riverpod notifiers live in one isolate | state cannot simply be shared with a worker; only messages cross |
+| Flutter's UI / Raster / IO / Platform threads are *not* isolates | "off the UI thread" and "off the UI isolate" are different claims |
+
+*The single most important consequence:* the naive fix — wrap the existing decode
+in =compute()= — can make things worse, because it copies the parsed structure
+back across the boundary. The correct shape is *transfer bytes in, decode in the
+worker, return the smallest representation the UI actually needs.*
+
+* 4. Proposed tooling surface
+
+Four pieces. Each is small; the value is that they compose and that no app has to
+discover any of this.
+
+** 4.1 A worker pool, not per-call =compute()=
+Long-lived isolates, sized once, reused. Removes spawn cost from the hot path and
+makes a decode budget expressible. =compute()= stays available for genuinely
+one-shot work.
+
+** 4.2 A decode-placement policy, applied by default
+Threshold-based: below N bytes decode inline (crossing the boundary costs more
+than it saves); above N, hand the *bytes* to a worker via
+=TransferableTypedData= and return a compact record. The threshold is
+measurable, and it should be measured rather than guessed.
+
+*This must be the default path, not an opt-in.* Measured: 6 of 544 Dart files in
+this family use isolates at all — kit 0 of 121, mountbridge 0 of 26,
+alert-log 0 of 60. No app will adopt this by choosing it; it has to
+arrive with the plumbing.
+
+** 4.3 A page contract spanning B1–B3 — Go decides, the client hints
+
+*The client should NOT dictate page size. It should state its constraints and
+let Go choose the plan.* This is the load-bearing decision in the whole design
+and it is worth being precise about why.
+
+*Each side knows half of what the decision needs:*
+
+| the CLIENT knows | the SERVER knows |
+|------------------+------------------|
+| viewport height, rows visible | record size and variance |
+| memory budget | whether the cursor is index-backed or a scan |
+| isolate/decode budget and worker count | cost of the next page |
+| whether the user is flinging or reading | total set size, if it is cheap to know |
+| current sort/filter intent | which sorts are indexed and which force a sort |
+
+A client that picks =limit=50= is guessing about record size and backend cost. A
+server that ignores the client is guessing about viewport and memory. *Neither
+side can size a page correctly alone*, which is precisely why every app that
+tries re-derives the number and gets it wrong differently.
+
+*The shape is therefore a hint-and-plan negotiation, not a command:*
+
+#+begin_src text
+  request:  cursor
+            sort, filter
+            hints {                     -- ALL advisory, all optional
+              want_items      : ~how many the viewport can use
+              max_bytes       : client's decode/memory ceiling
+              decode_offisolate: bool    -- can the client absorb a big page?
+              intent          : browsing | seeking | exporting
+            }
+
+  response: items
+            next_cursor                 -- opaque; nil means end
+            applied {                   -- WHAT THE SERVER ACTUALLY DID
+              items     : n returned
+              bytes     : n
+              capped    : bool
+              reason    : "max_bytes" | "record_size" | "scan_cost" | ...
+            }
+            total : known(n) | unknown
+#+end_src
+
+Three properties this buys:
+
+1. *One implementation of "how much is safe."* The sizing policy lives in Go,
+   next to the data, once — instead of in each of seven Dart clients.
+2. *The server can protect itself and say so.* A client asking for 10,000 rows
+   gets what the backend can serve cheaply, and =applied.capped= + =reason= tells
+   it that happened. Silent truncation is the failure mode to avoid; an explicit
+   =capped= flag is the difference between a contract and a surprise.
+3. *It composes with the decode constraint (§4.2).* A client that reports
+   =decode_offisolate: false= and =max_bytes: 64KB= gets pages small enough to
+   decode inline without dropping a frame. The *same* server serves a client with
+   a worker pool much larger pages. Neither client needs to know the rule.
+
+*=total= may be =unknown=, deliberately.* Requiring an exact count forces a
+=COUNT(*)= on every query and is the single most common reason a paging API
+quietly degrades into the full scan it was meant to prevent. A UI that needs a
+scrollbar proportion can use an estimate; one that does not should not pay for
+the count.
+
+*And =intent= is a real signal, not decoration.* =browsing= wants small fast
+pages; =exporting= wants large ones and does not care about frame time;
+=seeking= wants the page containing a cursor and nothing adjacent. The server
+can serve all three from one implementation only if it is told which is
+happening.
+
+*Where this lands as code:* the sizing policy, cursor encoding and =applied=
+accounting are ordinary Go — a candidate shared package, and one with a
+plausible multi-consumer story (alert-log has no paging at all today,
+mountbridge's directory listings are unbounded, mail-sweep's scan is inherently
+incremental). Per the standing rule that is prior-art-to-evaluate framing, not a
+verdict — but it is a better-shaped candidate than most, because the logic is
+genuinely identical across consumers while the *data* differs.
+
+Honouring it at each boundary:
+
+- *B1* — the Go side gains cursor + sizing policy. alert-log has
+  neither today.
+- *B2* — the transport carries one page, which also bounds the head-of-line
+  blocking stdio cannot otherwise avoid (transport §5b.2).
+- *B3* — the widget's viewport *drives* the fetch and *produces the hints*:
+  =ListView.builder= asking for index N triggers the page containing N, with
+  =want_items= derived from the visible range rather than a constant.
+
+** 4.4 Lazy content, after lazy listing — generalising the pin model
+Two-phase by default: *metadata now, content on demand*. mountbridge's explicit /
+implicit pool distinction is the reference implementation, and the same split
+applies to logs (index vs body), mail (headers vs message), and directories
+(entries vs file bytes).
+
+* 4b. Which pattern, where, how, when — and in what format
+
+Three patterns get conflated because all three are "don't do it all at once".
+They solve *different* problems and are independently needed.
+
+** 4b.1 The three patterns
+
+| pattern | the problem it solves | use it WHEN | do NOT use it when |
+|---------+-----------------------+-------------+--------------------|
+| *queue as bus* (NATS/JetStream) | producer and consumer lifetimes are decoupled | work must survive a restart · N independent consumers · producer must not block on consumer · cross-host | it is a request/response — a bus turns one call into two half-conversations and loses the error path |
+| *deferred I/O control* (the pin model) | the *cost* of fetching is high and the *need* is uncertain | metadata is cheap and content is expensive · most items are never opened · content is re-fetchable | the payload is small, or every item will be read anyway |
+| *lazy consumer* (viewport-driven) | demand is naturally bounded, supply is not | a scrollable collection · unbounded or unknown N · the user reads a window of a large set | N is small and bounded — paging a 40-row table adds hazards (§5) for nothing |
+
+They compose: a log viewer wants *all three* — NATS carrying the tail, deferred
+load for message bodies, viewport paging for the index.
+
+** 4b.2 Where each applies in this family
+
+| capability | pattern | why | state |
+|------------+---------+-----+-------|
+| mountbridge directory listings | lazy consumer + deferred I/O | unbounded dirs; content only on pin | B1 done, B2/B3 missing |
+| mountbridge file content | deferred I/O | already the pin model | ✓ done |
+| alert-log history table | lazy consumer | unbounded accumulation over time | *none of the three* |
+| alert-log live capture | queue as bus | daemon produces, UI may be absent | partial — has a hub |
+| mail-sweep scan | lazy consumer + queue | inherently incremental; long-running | has =scan/progress= notifications |
+| voicelab render progress | queue *or* server-stream | producer outlives any one viewer | websocket today |
+| netroute cluster events | queue as bus | N consumers, cross-host | =events/bus.go= in-process only |
+| fs-relay audit/mask | in-proc queue | hot path must not block | ✓ =pkg/channels=, drop-on-full |
+| lisp runtime session | *neither* — bidi RPC | interactive call/callback, not a stream | to design |
+
+** 4b.3 Transfer format — decide by what the client DOES with the data
+
+*The single most important correction first: on local IPC, compression is
+usually a net LOSS.* A stdio pipe, unix socket or D-Bus connection is not
+bandwidth-limited; adding gzip spends CPU on both ends to save transfer time
+that was already ~zero. Compress on the *network* tier (NATS across hosts, gRPC
+over TCP) where bandwidth is real. Do not compress a sidecar's stdout.
+
+| what the client does | format | why |
+|----------------------+--------+-----|
+| *displays a large scrolled collection* | *zero-copy random access* — flatbuffers or a packed columnar buffer | fields are read straight out of the byte buffer; *decode can be per visible row*, which is the only format that lets B3 laziness reach all the way down |
+| *transforms, then displays* | structured — protobuf, or JSON if small | you must materialize anyway; pick codegen'd if drift matters |
+| *passes bytes through* (file content, audio, images) | *raw blob, never parsed* | pair with =TransferableTypedData= — zero copy across the isolate boundary |
+| *small control/config* | *JSON* | readability wins; cost is irrelevant at this size |
+
+*Why zero-copy matters more in Dart than it would elsewhere:* =jsonDecode=
+produces =Map<String, dynamic>= — every key a heap string, every number boxed,
+every row a map. For 10k records that is enormous allocation and GC pressure, *on
+the isolate that also paints*. A flatbuffer-style layout lets you hand the raw
+=Uint8List= to the UI, keep it in =TransferableTypedData=, and materialize only
+the ~20 rows on screen.
+
+*In-family precedent:* =flatbuffers= is already a dependency of =flowq=;
+=klauspost/compress= is in =flowq=, =fleet-sched=, =stellar=; =cbor= is
+in =zx=, =netroute=, =fleet-sched=. So none of this is novel
+here — it is unevenly adopted.
+
+*And the Dart side is bare*, which is the opportunity and the risk: =dart:ffi= in
+2 files, =dart:typed_data= in 1, =Uint8List= in 3, across 544 Dart files.
+Essentially every payload is =jsonDecode= into boxed maps today.
+
+** 4b.4 "Embedded Go parser tooling" — the strongest option, and it needs no new mechanism
+
+The asymmetry is the whole argument: *Dart's weakness is CPU-bound parsing on a
+single isolate; Go's strength is exactly that.* Three ways to exploit it,
+cheapest first:
+
+*(a) Go pre-digests — no FFI, no new mechanism, available today.*
+The Go daemon already exists in every pair. Have it parse the awkward source
+format (API JSON, log lines, org text, mail headers) and emit a *compact,
+display-shaped* buffer. Dart never sees the complex format at all. This requires
+no new dependency on either side and is where the biggest win is, because it
+removes parsing from Dart rather than relocating it.
+
+*(b) =dart:ffi= + Go =-buildmode=c-shared= — desktop.*
+Go compiles to a C-ABI shared library that Dart calls directly. Useful when the
+parse must happen *in* the app rather than in a daemon — an editor parsing a
+buffer, a lisp reader. Costs: FFI boundary marshalling, a per-platform build
+matrix, and manual memory ownership across the boundary. Currently 2 Dart files
+in the family touch =dart:ffi=.
+
+*(c) gomobile — mobile.*
+Already proven here twice: =voicelab/mobile/ttsmobile.go= with an 18-method
+=MethodChannel=, and =notekeep/mobile/notekeep.go=. It is the only option on
+Android, and it is a *second consumer* of the same idea, which is why the bridge
+itself is a shared-package candidate.
+
+*Recommendation: (a) by default; (b) only when the parse must be in-process;
+(c) where mobile requires it.* The lisp runtime is the one place (b) is likely
+genuinely needed, since a reader/evaluator in a daemon turns every keystroke into
+a round trip.
+
+** 4b.5 The decision procedure, condensed
+
+#+begin_src text
+  Is the payload opaque to the UI (file bytes, audio, image)?
+    -> raw blob + TransferableTypedData. Never parse. Done.
+
+  Is it a large scrolled collection?
+    -> Go decides the page (§4.3). Zero-copy layout. Decode per visible row.
+       Deferred content behind the listing if content is expensive.
+
+  Do producer and consumer have independent lifetimes, or N consumers?
+    -> queue as bus. NATS if it must survive restart or cross hosts;
+       in-proc channels if same process (fs-relay/pkg/channels shape).
+
+  Is it interactive call/callback?
+    -> bidi RPC, not a queue. A bus loses the error path.
+
+  Is it small control/config?
+    -> JSON. Stop optimizing.
+
+  Crossing a network hop?      -> consider compression.
+  Crossing a local pipe/socket? -> DO NOT compress.
+#+end_src
+
+
+
+Paging plus concurrency introduces bugs that a full-buffer read cannot have. Any
+tooling must handle these or it will be worse than what it replaces.
+
+| hazard | failure | mitigation |
+|--------+---------+------------|
+| *stale page* | user scrolls, sort changes, an in-flight page for the old view lands and overwrites | generation token per view; discard mismatches |
+| *out-of-order arrival* | page 3 lands before page 2; naive append corrupts order | index pages by cursor, never by arrival |
+| *duplicate in-flight* | fast scroll requests page 5 three times | in-flight map keyed by cursor; join the existing future |
+| *unbounded prefetch* | fling-scroll queues 50 pages; the queue outlives interest | cancel on scroll-away; bound in-flight to a small N |
+| *no backpressure* | producer outruns consumer into unbounded memory | bounded queue with a stated overflow policy — the =fs-relay/pkg/channels= "drop on full to keep the hot path unblocked" pattern |
+| *cancellation not propagated* | UI drops the page; the daemon keeps computing | cancellation must cross the wire — =$/cancelRequest= exists in mail-sweep; gRPC has context cancellation; D-Bus does not |
+| *jank moved, not removed* | decode off-isolate, then rebuild 10k widgets on arrival | insert pages incrementally; never rebuild the whole list |
+
+The cancellation row is where this couples back to transport choice: *a paging
+design is only as cancellable as its wire.* That is a further, concrete input to
+=8d112c91=.
+
+* 6. What to measure before building any of it
+
+The 6-of-544 isolate figure is *exposure*, not an observed defect, and nothing in
+this family has measured frame time. In order:
+
+1. *Frame timing on mountbridge's file manager against a large directory.* It is
+   the sharpest case — 1,635-line view, 1,027-line D-Bus client, zero isolate
+   use, and directory size is unbounded. If it does not jank, this whole design
+   is lower priority than it looks.
+2. *The decode threshold* for §4.2 — the payload size at which crossing an
+   isolate boundary pays for itself. Guessing it produces a policy that is wrong
+   in both directions.
+3. *=compute()= versus =TransferableTypedData=* on a realistic payload, to
+   confirm the double-copy claim in this Flutter version rather than inheriting
+   it as folklore.
+
+* Source Verification Notes
+
+** Verified
+- =alert-log= has no =limit=/=offset=/=cursor= in =pkg/api/=,
+  =pkg/sink/= or =pkg/model/= — grep across all three, excluding tests.
+- =paginated_sortable_table.dart= renders =itemCount: items.length= over a
+  materialized list (line 501).
+- Isolate usage 6 of 544 Dart files, per-app breakdown in
+  [[file:transport-design-surface.org]] §5b.3.
+- mountbridge's pin model — =internal/pin/registry.go= 326 LOC, explicit/implicit
+  pools, and the "lazy pin mode" comment at line 138, read directly.
+- =fs-relay/pkg/channels= documents drop-on-full as a stated requirement.
+
+** Judgement, not measurement
+- The B1/B2/B3 framing and the claim that misalignment nullifies laziness.
+- The tooling shape in §4 and the hazard list in §5.
+- That worker pools beat per-call =compute()= here — true in general, unmeasured
+  in this family.
+
+** Not verified — do not present as findings
+- *That any of this currently janks.* No frame timing has been taken anywhere in
+  this family.
+- The =compute()= double-copy cost in this Flutter version specifically.
+- voicelab' and word-bank's B1 behaviour — marked "?" in §2 rather than guessed.
+- *That compression is a net loss on local IPC here.* It is well-founded in
+  general — a pipe is not bandwidth-limited — but no measurement was taken on
+  these payloads. Stated as a rule with a reason, not as a benchmark.
+- *That a zero-copy layout beats =jsonDecode= for these record sizes.* The
+  allocation argument is sound in principle; the crossover point is unmeasured,
+  and for small collections =jsonDecode= will win on simplicity.
+- Whether the lisp runtime genuinely needs in-process parsing (option b) or can
+  live with a daemon round trip. Asserted as likely, not established.
+
+** Format-survey provenance
+=flatbuffers= in =flowq=; =klauspost/compress= in =flowq=, =fleet-sched=,
+=stellar=; =cbor= in =zx=, =netroute=, =fleet-sched=;
+=encoding/gob= only in =gotreesitter= internals. Dart side: =dart:ffi= 2 files,
+=package:protobuf= 3, =dart:typed_data= 1, =Uint8List= 3, gzip 1 — across 544
+Dart files. Measured by go.mod + source grep, excluding =.worktree/=, =vendor/=
+and the vendored Google samples under =go-epub-translator=.
+Note: no =protobuf= line matched in any go.mod, yet =netroute= has generated
+=.pb.go= — so protobuf arrives transitively via grpc. Recorded as a discrepancy
+rather than resolved.
+
+* Cross-References
+- [[file:transport-design-surface.org]] §5b (parallelism), §6.1 (Tier A plumbing)
+- =8d112c91= wire format — cancellation propagation is an input to it
+- =f0e6927d= Go/Dart pairing · =4df19bd4= fs-relay · =0606f5e2= Dart settings

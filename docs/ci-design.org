@@ -1,0 +1,331 @@
+:PROPERTIES:
+:ID:       frameworks-ci-design
+:END:
+#+title: CI design — check workflow for the frameworks repo
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-08-09
+:END:
+
+** Status
+*SUPERSEDED 2026-08-09 — the workflow this document designs has been deleted.*
+
+=.github/workflows/check.yml= is removed and =frameworks= runs no GitHub
+Actions. The document is kept, not deleted, because §3.1's finding is about the
+*check suite*, not about Actions, and it outlives the workflow.
+
+*Why it was retired* — user decision, 2026-08-09: Actions was never asked for,
+and at this point it is "no benefit and only cost". It was added by agent
+sessions (=22c1bc6= 2026-07-29, extended =776bf7f= 2026-08-07), not requested.
+
+*Why it was failing, since it is easy to misread as a privacy defect and is
+not one.* Every repo in this family is private, =autocfg= included. Locally
+=GOPRIVATE=github.com/davidwalter0/*= sends the go tool straight to git with the
+user's own credentials, so =make check=, textloom's =gen-icon@v0.1.0= invocation
+and waterworks's build all resolve. A GitHub Actions runner is the one environment
+that is *not* that user space: its =GITHUB_TOKEN= is scoped to =frameworks=
+alone, so a sibling private module cannot be fetched and =check-go= failed at
+=Lint= with =git ls-remote ... exit status 128=. The break arrived with the
+pflag→autocfg conversion (=1b32c00=); the previous run was green.
+
+*The gate is unchanged and is what it always really was:* =make check= in =go/=
+and in =ui/=, run locally / via =_:check-point=. Nothing that CI enforced is
+lost, because CI asserted its stage list equalled the Makefile's — the Makefile
+was always the source of truth.
+
+*The original status, retained:* done, both halves — =check-go= (2026-07-29)
+gated the Go module, =check-ui= (2026-08-07) the Dart packages under =ui/pkg/=.
+The gap between those two dates is itself the finding: tranche 0 landed 219
+tracked Dart files under =ui/pkg/desktop_kit= on the same branch that still
+carried a workflow — and this document — asserting =ui/= was empty scaffolding.
+Landing that state on =main= would have reported green without running a line
+of Dart. See §3.1. *That lesson is why this file survives its workflow.*
+
+** Completed
+- [X] Read the family exemplar (=voicelab/.github/workflows/check.yml= and
+  =scan.yml=) and copied its pattern rather than inventing one
+- [X] Wrote =.github/workflows/check.yml= for the =go/= module, SHA-pinned,
+  `permissions: {}` default-deny, no secrets
+- [X] Validated YAML parses and `make check`'s exact target sequence passes
+  locally
+- [X] Documented exactly how a Dart =check-ui= job slots in later
+- [X] 2026-08-07: added the =check-ui= job for real, ahead of landing the
+  branch on =main= — because landing is precisely when
+  `on: push: branches: [main]` starts reporting on =main=
+- [X] 2026-08-07: resolved a fresh SHA for =subosito/flutter-action= rather
+  than reusing the flagged tag-pin (§5), and recorded the annotated-tag
+  dereference trap in the workflow header
+
+** Next Steps
+- [ ] Parent tracks the =voicelab/release.yml= tag-pinning finding (§5) —
+  out of scope for this change, another repo
+- [ ] =check-ui= pins =channel: stable=, so the runner's Flutter is whatever
+  stable is that day, while the suite was verified locally against 3.44.2 /
+  Dart 3.12.2. If a stable bump ever reds the job on unchanged code, pin
+  =flutter-version= instead of widening the gate.
+- [ ] Add =cov= to =check-ui= once a coverage threshold is defined; today
+  =ui/Makefile= reports coverage without thresholding it, so it is
+  deliberately not a gate step.
+
+* 1. What was copied, and from where
+
+Source of truth: =davidwalter0/voicelab/.github/workflows/check.yml= (76
+lines) and its sibling =scan.yml= (137 lines), both read in full before
+writing anything here. =check.yml= is the primary template — a single-job
+Go quality gate with the exact structure this repo needs today. =scan.yml=
+was read for the two-job build/scan separation pattern, which frameworks
+does not need yet (no container image is built here), but is recorded so a
+future scan workflow (if the =go/= module ever ships a container) follows
+the same shape rather than a fresh invention.
+
+Nothing in =check.yml= was invented from scratch: trigger shape
+(`push: [main]` + `pull_request`), `permissions: {}` default-deny with a
+per-job opt-in, the SHA-pin-with-trailing-version-comment convention, and
+the "install lint/vuln tools explicitly + assert they landed on PATH"
+step are all lifted directly from the exemplar. The only structural
+change is scoping every step to the =go/= subdirectory via
+`defaults.run.working-directory`, because frameworks' Go module lives at
+=go/go.mod=, not at the repo root the way voicelab' does.
+
+* 2. The workflow: `.github/workflows/check.yml`
+
+** 2.1 Job: `check-go`
+
+Steps, in the order the Makefile's own `check` target runs them
+(`check: fmt-check lint vet vuln test cov` in =go/Makefile=):
+
+| Step | Why it exists |
+|------+----------------|
+| Checkout | full checkout (not sparse) — needed because the module is at =go/go.mod=, and =make lint=/=make vuln= walk the whole =go/= tree |
+| Set up Go | pins the Go toolchain to =go/go.mod='s `go 1.26.5` via `go-version-file`, so CI and local `go-version path` can never silently drift apart |
+| Install check tools | `golangci-lint` and `govulncheck` are not vendored or in the module's own dependency graph — the Makefile's own comments call this out (`lint` silently falls back to `go vet` and returns 0 if golangci-lint is missing; `vuln` hard-fails if `govulncheck` is missing). Installing explicitly and asserting presence prevents `lint` from passing green while checking nothing |
+| Assert tools present | belt-and-braces on the row above — fails loudly rather than silently degrading |
+| Format check | `make fmt-check` — gofmt drift gate |
+| Lint | `make lint` — golangci-lint over `./...` |
+| Vet | `make vet` — `go vet ./...` |
+| Vuln (blocking) | `make vuln` — govulncheck, hard fail on any finding |
+| Test | `make test` — `go test ./...` |
+| Coverage | `make cov` — per-package coverage table (informational; not yet gated on a threshold, matching the exemplar, which also does not gate on a number) |
+
+Each Makefile target is invoked as its own step (rather than one
+`make check` step) purely so a failure is attributable at a glance in the
+Actions UI — this mirrors voicelab' own choice to split rather than
+collapse, not a re-derivation.
+
+** 2.2 Security posture — checked line by line against the house rules
+
+| Requirement | How this workflow satisfies it |
+|-------------+----------------------------------|
+| Every `uses:` pinned to a full 40-char commit SHA | both actions (`checkout`, `setup-go`) are pinned to SHAs, `# vX.Y.Z` trailing comments only |
+| `permissions: {}` default at workflow top | yes; `check-go` opts in to `contents: read` only |
+| Never `secrets: inherit` | no `secrets:` key appears anywhere in the file; the job needs none |
+| Never `pull_request_target` | trigger is `pull_request` |
+| Two-job build/scan separation if a scan job is added | not applicable yet — no container image is built by this repo; noted for when/if one is |
+
+* 3. Dart job — exact shape (ADDED 2026-08-07)
+
+** 3.1 Why this section was stale, and what that cost
+
+The original text of this section — retained below the line for the record —
+argued correctly that a Dart job must not be added against an empty tree,
+because "a green no-op job reads as 'Dart is covered' when it covers nothing."
+
+Its premise then expired without the conclusion being revisited. Tranche 0
+landed =ui/pkg/desktop_kit= (219 tracked =.dart= files, 98 test files, 1818
+test cases) and =ui/Makefile= with a real `check: fmt-check analyze test`
+target — on this same branch. From that commit forward the reasoning inverted:
+the no-op risk was gone, and the live risk was a workflow that ran only
+=check-go=.
+
+Nothing failed, which is the point. =check-go= passed, and had this branch been
+fast-forwarded onto =main=, =main= would have gone green while never invoking
+=flutter analyze= or =flutter test= on 219 files. The gate does not have to be
+broken to stop being a gate; its *premise* only has to go stale. =ui/Makefile='s
+own header records the same false-green from the Makefile side, which means it
+was observed once and the CI half was still missed.
+
+Added ahead of landing, since `on: push: branches: [main]` makes landing the
+moment the claim starts being made.
+
+** 3.2 Three corrections applied to the draft below
+
+The drafted body was reused rather than redesigned, with three changes:
+
+1. *SHA pin resolved fresh.* The draft left
+   =subosito/flutter-action@<PIN-TO-SHA-AT-THAT-TIME>=. Resolved to
+   =1c5eb12d812966ca84680edc38353a0851c8fd56= (v2.14.0).
+   TRAP: v2.14.0 is an ANNOTATED tag, so `git ls-remote <url> refs/tags/v2.14.0`
+   returns =7814e4f6…= — the *tag object*, which Actions cannot resolve. The
+   commit is the `^{}` dereferenced line. Both are 40 hex chars, so a
+   "is it SHA-pinned?" check passes either way and only the wrong one fails at
+   run time.
+2. *A `make get` step was missing.* The draft went straight from `fmt-check` to
+   `analyze`. =ui/Makefile= deliberately keeps `get` out of `check`, and
+   `flutter analyze` needs resolved dependencies — so analyze would have failed
+   for a reason unrelated to the code.
+3. *Toolchain passed explicitly.* =ui/Makefile= defaults
+   =FLUTTER ?= $HOME/flutter/bin/flutter= (Flutter is not on PATH in
+   these workspaces). That path does not exist on a runner, so the job sets
+   =FLUTTER: flutter= / =DART: dart= in `env:` rather than editing the Makefile
+   — the `?=` exists for this, and hardcoding a runner path would break local
+   use in exchange.
+
+Added beyond the draft: an *"Assert the gate covers at least one package"*
+step, mirroring =check-go='s "Assert tools present". =ui/Makefile= drives every
+target with `for p in $(PACKAGES)` over a `pkg/*/pubspec.yaml` wildcard; if
+that glob matches nothing, every target iterates an empty list and exits 0.
+That is the same false-green in a third costume, so it is asserted rather than
+assumed.
+
+** 3.3 The job as drafted (historical — see 3.2 for what changed)
+
+Original rationale, preserved: when Dart code and its Makefile land in =ui/=,
+add this job as a peer of `check-go` (the workflow is already structured for
+it — see the header comment in =check.yml=):
+
+#+begin_src yaml
+  check-ui:
+    name: Dart (ui/)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@<PIN-TO-SHA-AT-THAT-TIME> # vX.Y.Z
+        with:
+          channel: stable
+          # or flutter-version-file: ui/pubspec.yaml if the constraint is
+          # narrow enough to resolve one version from it
+
+      - name: Format check
+        run: make fmt-check
+
+      - name: Analyze
+        run: make analyze
+
+      - name: Test
+        run: make test
+#+end_src
+
+Notes for whoever adds it:
+- Do NOT reuse =voicelab/release.yml='s =subosito/flutter-action@v2= pin
+  verbatim — that pin is itself a finding (§5): it is tag-pinned, not
+  SHA-pinned. Resolve a fresh SHA for whatever Flutter action version is
+  current at that time, per the house rule (verify a new digest/SHA
+  before pinning, don't copy a stale or already-flagged one).
+- Keep `check-go` and `check-ui` as separate jobs (not steps in one job)
+  so they run in parallel and a Go-only change does not wait on Dart
+  tooling installation, and vice versa.
+
+* 4. What was validated locally vs. what is unverifiable until GitHub Actions runs it
+
+** Validated locally
+- YAML parses (`python3 -c "import yaml; yaml.safe_load(open('.github/workflows/check.yml'))"` — succeeded, top-level `permissions: {}`, one job `check-go` with `permissions: {contents: read}`).
+- `make check`'s exact target sequence (`fmt-check`, `lint`, `vet`, `vuln`, `test`, `cov`) run individually, in that order, inside =go/=, with the version-managed toolchain (`eval "$(go-version path)"` → confirmed `go version go1.26.5 linux/amd64`, matching =go/go.mod='s `go 1.26.5`). All six passed:
+  - fmt-check: OK
+  - lint: 0 issues
+  - vet: clean
+  - vuln: no vulnerabilities found
+  - test: `ok  .../pkg/installer  0.459s`, no test files in `cmd/example-installer`
+  - cov: `pkg/installer 74.2%`, `cmd/example-installer 0.0%`, TOTAL 73.9%
+- golangci-lint and govulncheck were already present on this machine's
+  =$GOPATH/bin= (installed by a previous session), so the workflow's own
+  "Install check tools" step was not exercised locally in this validation
+  run — only the six `make` targets that come after it. The install
+  commands themselves (`go install .../golangci-lint@v2.12.2`,
+  `go install .../govulncheck@v1.3.0`) are copied verbatim from the
+  exemplar and were not re-run here; they are standard `go install`
+  invocations against the module proxy + checksum DB, not something
+  specific to this repo.
+- Mid-validation transient: an early `make lint` run failed with
+  `undefined: payload` in `cmd/example-installer/main.go`. Re-running
+  seconds later (`go build ./...`, `go vet ./...`, then the full sequence
+  again) passed cleanly. This tree is shared with sibling agents running
+  concurrently in the same worktree (per the fan-out isolation rule); the
+  failure was almost certainly a mid-write snapshot of
+  `cmd/example-installer/{main,payload_with,payload_without}.go` being
+  authored by another agent at that instant, not a defect in this
+  workflow or in the committed code — the build-tag pair
+  (`//go:build withpayload` / `//go:build !withpayload`) is structurally
+  sound and both `go build ./...` and `go vet ./...` passed cleanly on
+  the immediate re-check.
+
+** Unverifiable from here
+- Whether this workflow actually triggers and passes on GitHub Actions
+  runners (different environment: Ubuntu image package versions, network
+  access to the Go module proxy and =sum.golang.org= during `go install`
+  of the two tools, GitHub's own action-pinning resolution of the two
+  SHAs). Nothing here was pushed, no workflow run was triggered, per the
+  explicit constraint on this task.
+- `actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10` and
+  `actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c` were not
+  independently re-verified against GitHub's API in this session — they
+  are reused as-is from voicelab' =check.yml=, which states they were
+  verified there. If voicelab' pins are ever rotated, this file does
+  not automatically follow; that is expected (each repo's pins are
+  reviewed independently, per the house security-scans rule).
+
+** Performance
+Local `make check` wall-clock (six targets, no test cache, tools
+pre-installed): *8.555s real* (`go clean -testcache` first, then the full
+`fmt-check lint vet vuln test cov` sequence timed together). This is the
+CI baseline for the six `make`-target steps only — it excludes checkout,
+`actions/setup-go` (network + optional cache restore), and the
+`go install golangci-lint govulncheck` step, none of which were measured
+here (not measured; those steps only exist in the CI environment, and this
+machine already had both tools cached).
+
+* 5. Finding recorded for the parent (not fixed here — different repo, out of scope)
+
+=voicelab/.github/workflows/release.yml= still tag-pins three actions,
+each with its own "# pin: replace with a full commit SHA" comment already
+in the file:
+- `actions/checkout@v4`
+- `actions/setup-go@v5`
+- `subosito/flutter-action@v2`
+
+This violates the same full-SHA-pin rule this workflow follows, in a
+sibling repo. Left as-is per this task's scope (frameworks only); the
+parent (mgmt todo 17a7476c) tracks closing it.
+
+* Source Verification Notes
+
+** Verified Claims
+- =voicelab/.github/workflows/check.yml= is 76 lines, =scan.yml= is 137
+  lines: confirmed by reading both files in full in this session.
+- SHA pins `df4cb1c069e1874edd31b4311f1884172cec0e10` (checkout) and
+  `4a3601121dd01d1626a1e23e37211e3254c1c06c` (setup-go): read verbatim
+  from =voicelab/.github/workflows/check.yml= lines 32 and 35 in this
+  session; not independently re-queried against GitHub's API here (see
+  §4 "Unverifiable from here").
+- `go/go.mod` declares `go 1.26.5`, module
+  `github.com/davidwalter0/frameworks/go`, one dependency
+  `github.com/spf13/pflag v1.0.10`: read directly from the file.
+- `go/Makefile`'s `check` target is exactly
+  `check: fmt-check lint vet vuln test cov`: read directly from the file.
+- `ui/` contains only `.gitkeep`-scaffolded directories (no Dart source,
+  no `pubspec.yaml`): confirmed via `find ui -type f` in this session,
+  returning only `.gitkeep` files plus three pre-existing design docs
+  under `ui/docs/`.
+- Local toolchain resolution (`go-version path` → `go1.26.5`,
+  `linux/amd64`): confirmed by running it and `go version` in this
+  session.
+- The six `make` targets passing, and their exact output (coverage
+  percentages, "0 issues", "No vulnerabilities found"): pasted verbatim
+  from this session's command output above.
+
+** Estimated Claims
+- None — the CI wall-clock figure above is a direct measurement (`time`),
+  not an estimate, and is scoped explicitly to what was and was not
+  measured.
+
+** Corrections Made
+- None required in this session.

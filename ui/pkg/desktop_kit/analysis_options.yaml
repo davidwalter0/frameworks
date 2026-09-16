@@ -1,0 +1,30 @@
+# desktop_kit analyzer config. Self-contained (no external lint package) so it
+# resolves offline. The package must stay state-management agnostic — that rule
+# is enforced mechanically by `make deps-guard`, not here.
+analyzer:
+  language:
+    strict-casts: true
+    strict-inference: true
+    strict-raw-types: true
+  errors:
+    todo: ignore
+
+linter:
+  rules:
+    - always_declare_return_types
+    - avoid_empty_else
+    - avoid_print
+    - avoid_relative_lib_imports
+    - await_only_futures
+    - camel_case_types
+    - cancel_subscriptions
+    - close_sinks
+    - directives_ordering
+    - prefer_const_constructors
+    - prefer_const_declarations
+    - prefer_final_locals
+    - prefer_single_quotes
+    - sort_pub_dependencies
+    - unawaited_futures
+    - unnecessary_brace_in_string_interps
+    - use_key_in_widget_constructors

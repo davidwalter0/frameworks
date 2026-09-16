@@ -1,0 +1,502 @@
+:PROPERTIES:
+:ID:       frameworks-ui-subsumption-design
+:END:
+#+title: Framework subsumption design — frameworks/ui
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Design complete and ready to execute. No Dart has moved yet: =ui/pkg= and
+=ui/cmd= hold only =.gitkeep=. The Go half is landed and proven
+(=frameworks/go/pkg/installer=, commit =721fdf3=) and is the reference for how
+each Dart tranche should feel.
+
+** Completed
+- [X] Three-tier decomposition with a stated admission rule per tier
+- [X] Copy-first migration contract, including the retire-the-fork gate
+- [X] Riverpod 3 standard + =deps-guard= inversion design
+- [X] Tranche order derived from the census, with per-tranche exit criteria
+- [X] Failure modes with named controls
+
+** Next Steps
+- [ ] Copy =desktop_kit= into =ui/pkg/desktop_kit=; 98 test files green
+  *unmodified* before any change (todo =4e934216=)
+- [ ] Invert =deps-guard= (todo =bd91e7e9=)
+- [ ] Stand up =ui/pkg/app_kit= + =ui/cmd/ui0= (todos =ab8f146b=, =66e1b89b=)
+
+* 1. What is being subsumed, and what "without breaking" means
+
+The README's ask: *design an approach to subsume the multiple approaches without
+breaking the functionality*. The measured subject is in
+[[file:duplication-census.org]]; the applications are in
+[[file:flutter-app-inventory.org]]. In short: eleven apps, one 24,905-line kit
+that five of them substantially ignore, four distinct fork causes, and a pin
+surface split across =path=, a bare sha, =v0.2.3= and =v0.2.4=.
+
+"Without breaking functionality" is given a *testable* definition here, because
+the vague version is how migrations fail:
+
+| # | Invariant | How it is checked |
+|---+-----------+-------------------|
+| I1 | No app changes observable behaviour except where a STALE fork is deliberately upgraded | the app's own suite, plus a run of the app |
+| I2 | Every un-migrated app keeps resolving its dependencies throughout | =flutter pub get= in each app after every tranche |
+| I3 | Any tranche can be abandoned at any point with one revert and no coordination | the original fork is still on disk until its gate passes |
+| I4 | A deliberate upgrade is *named* before it happens | the tranche's diff review lists the behaviour deltas |
+
+I3 is the load-bearing one and it is what makes the rest affordable. It is
+purchased by the copy-first contract (§3) and by nothing else.
+
+* 1b. CONTESTED (2026-07-29) — the tiering axis below may be wrong
+
+Read this before §2. A dedicated design pass
+([[file:app-kit-api-design.org]]) produced measured evidence against the
+three-tier model, and against my framing of what =app_kit= is for. I have not
+rewritten §2, because the counter-proposal deserves a decision rather than a
+silent substitution — but §2 should be read as *the standing design under
+challenge*, not as settled.
+
+** Challenge 1 — the tier axis is opinion level; it should be package granularity
+
+=desktop_kit= is *one pubspec, version 0.2.4, 23 barrel entrypoints, 5 runtime
+dependencies* (verified). A barrel is neither a dependency boundary nor a version
+boundary. The consequence is concrete and already biting: the LED ticker fix
+=e321e56= cannot ship without re-validating the entire package, including the
+2,768-line =emacs_buffer= engine — which is *why* six consumers sit on =v0.2.3=
+and why =62419295= exists. Pin governance is a *symptom of package granularity*,
+not an independent problem.
+
+Three tiers therefore produces *three monoliths* with the same defect at
+one-third the scale. The counter-proposal: *N packages*, plus two mechanically
+checkable rules — no package may depend on a state-requiring package unless it
+requires one too; no cycles — plus one acceptance consumer. Under that,
+=emacs_buffer_editor= (5,949 in textloom) is not a stretched tier-1 "primitive"; it
+is =desktop_kit_editor=, its own package, with textloom as promotion source and
+=example/='s 4,115-line copy deleted.
+
+** Challenge 2 — =app_kit= is the provider TAIL, not the widget
+
+The measured core of the argument, and it reframes the whole problem. Each of the
+five recurring shapes decomposes into *(state-agnostic widget, tier 1)* +
+*(provider / persistence tail, tier 2)*. **The kit shipped the widget for shapes
+2–5 and the tail for none.** So every app had to write a tail regardless — and
+writing the whole thing was less work than wiring a widget that demands its state
+be supplied.
+
+=AdaptiveLayout= is the proof: 8 =required= constructor arguments (I measure 8;
+the design doc says 10 — count method differs, direction identical), and *outside
+its origin in task-board and the kit's own =example/=, no app uses it at all*.
+task-board's own fork has zero required arguments at the call site because it
+reads providers. Writing your own was literally less typing.
+
+** The adoption gradient — independently reproduced
+
+Adoption tracks *state-ownership cost*, not availability and not documentation:
+
+| Kit API | =required= args | Apps referencing it |
+|---------+-----------------+---------------------|
+| =showDesktopKitAbout= | 1 | 5 |
+| =AppearancePane= | 2 | 6 |
+| =SettingsCategoryTile= | 3 | 3 |
+| =SpanHost= | 18 | 2 |
+| =AdaptiveLayout= | 8 | 1 (its own origin) |
+
+My counts differ from the design doc's in the specifics — mine greps whole repos
+including tests and docs, so it over-counts adoption, and I measure =SpanHost= at
+18 required args rather than 7. Both discrepancies make the gradient *stronger*,
+not weaker. The monotone relationship is real and reproducible either way.
+
+Design bar that follows: *an app_kit API must cost fewer required arguments than
+the alternative costs lines.* And the =LedIndicator= counterexample (1 required
+arg, still only 2 adopters) yields the second rule: *export compositions, never
+leaves* — alert-log inlined a private =_WsStatusIndicator= because the
+dot was never the hard part, the placement glue was.
+
+** Challenge 3 — three of my §2 premises are wrong
+
+1. *Shape 5 (About) is NOT a discoverability failure.* Four apps already call
+   =showDesktopKitAbout=. ghk's "50-line fork" is a host that *calls* the kit; word-bank's
+   27 lines are Flutter's own =showAboutDialog=. The one real fork (voicelab, 221) is a
+   *capability gap* — the existing shape cannot express per-library SIL OFL/LGPL
+   attribution. So =app_kit= gets *no About API*, and my "discoverability"
+   diagnosis was wrong for this shape.
+2. *The settings category schema ALREADY EXISTS in tier 1, and three apps use
+   it* — =SettingsCategory= plus a near-identical
+   =buildSettingsCategories(BuildContext)= in textloom, netroute_manager and ghk. A
+   =SettingsSchema= as I proposed would be a *fourth* copy. What is actually
+   duplicated is the ~50-line host and the typed store.
+3. *Four of the five shapes are mis-tiered in §2* — and promoting the widget
+   while leaving the tail unaddressed *is* the =AdaptiveLayout= failure, i.e. my
+   design reproduces the exact mechanism that produced the problem.
+
+** Anti-flatness, made mechanical
+
+=make riverpod-required-guard=: every file under =app_kit/lib/src/= must import
+=flutter_riverpod=. A leaf widget does not need Riverpod, so it *cannot* enter
+=app_kit= — =emacs_buffer= (2,768) is mechanically inadmissible. That is a
+checkable property where my §2 offered only a two-consumer convention.
+
+** My honest assessment of the challenge
+
+It is better than what §2 says, on evidence rather than taste. The
+package-granularity point in particular explains a problem I had filed as
+separate (=62419295=), which is the signature of a correct abstraction. The
+=ui0=-as-oracle idea also takes a hit worth recording: the design pass is
+skeptical it moves adoption, on the grounds that *the kit already has a 12-page
+gallery and it did not*. I think that is right, and it means =ui0= is a
+regression gate rather than an adoption mechanism — a narrower claim than §2
+makes.
+
+Not yet decided, and needing a call: whether to replace the three tiers with N
+packages before any further tranche lands. Tranche 0 is unaffected (a verbatim
+copy is correct under either model), so nothing is blocked today.
+
+* 2. Three tiers, each with an admission rule
+
+The kit today is one flat package spanning primitives (=resize_handle=, 63
+lines) and a near-application (=emacs_buffer=, 2,768 lines). That flatness is
+why the app-shell tier has nowhere to live and ended up inside
+=voicelab/app/app_shell.dart= at 1,392 lines.
+
+#+begin_src text
+frameworks/ui/pkg/
+  desktop_kit/   tier 1 — primitives and engines.  State-agnostic. No app opinions.
+  app_kit/       tier 2 — the app shell.           Riverpod 3. Opinionated.
+frameworks/ui/cmd/
+  ui0/           tier 3 — the oracle.              Consumes only tiers 1+2.
+#+end_src
+
+** Tier 1 — =desktop_kit=: primitives and engines
+
+Arrives as a *verbatim copy* of today's kit. Admission rule, unchanged from the
+existing kit and worth keeping precisely because it has held:
+
+> A tier-1 component takes its state as =value= and emits =onChanged=. It carries
+> no state-management dependency. It expresses no opinion about how an
+> application is laid out.
+
+This is enforced mechanically by =make deps-guard=, and that enforcement is why
+the kit is consumable by apps on Riverpod 2, Riverpod 3, =provider=, and
+nothing — four populations that exist today. *The guard stays on for tier 1.*
+The Riverpod 3 decision (§4) applies to tier 2 only; conflating them would
+strand =mountbridge= and the four state-free apps.
+
+** Tier 2 — =app_kit=: the app shell
+
+New. Its requirement list is *derived* from the census's five recurring shapes,
+not invented:
+
+| Shape | Evidence | app_kit provides |
+|-------+----------|------------------|
+| app shell / chrome | 9 of 11 apps hand-roll it; 2,181 lines; 1392-vs-53 spread | =AppScaffold= — nav, panes, chrome slots over =IndexedStack= |
+| settings presentation | every app; ~6,600 app-side lines; 5 of 10 ignore the kit store | =SettingsSchema= — declarative categories over tier-1 =SettingsStore= |
+| theme entry point | 8 apps; 501 differing lines word-bank↔voicelab on *wiring*, not colour maths | =AppTheme= — the provider tail tier 1 forbids |
+| status / connection | 8 apps; banner/badge/chip/LED all reinvented | =StatusAffordance= over tier-1 =LedIndicator= |
+| about / version | kit 231 declined by 3 apps that wrote 298 more | re-export, wired into =AppScaffold= by default |
+
+Admission rule:
+
+> A tier-2 component may depend on Riverpod 3 and may hold an opinion. It must
+> be *derivable from the census* — at least two applications must already have
+> hand-rolled it. A component with one consumer is that application's code and
+> does not belong here.
+
+That last clause is the user's own standing rule ("a package with exactly one
+consumer is not shared infrastructure, it is that project's code") applied as an
+admission gate, and it is what stops =app_kit= from becoming a second flat
+dumping ground.
+
+** Tier 3 — =ui0=: the oracle
+
+=cmd/ui0= is *not a demo*. It is the acceptance surface:
+
+> An =app_kit= capability with no =ui0= surface is not done.
+
+This exists because the census produced a *discoverability* finding, not a
+capability one: the kit already had =about_dialog= (231 lines) and three apps
+wrote their own anyway; =task-board= re-solved layout and status problems whose
+solutions it had itself donated. A gallery that is merely available repeats
+that. An oracle that gates "done" does not.
+
+*The seed for =ui0= is an open design decision, not a mechanical promotion.* The
+original plan here was "=example/= promoted from demo to oracle". Census §5b
+falsifies that assumption: =example/= (51 lib files, 68 tests, 30,332 lines, 12
+gallery pages) is the *stale ancestor of =textloom=* — 34 of textloom's 67 files share
+its filenames, 16 byte-identical, and textloom is larger in all 15 diverged files
+(11,982 → 15,919 lines). Seeding =ui0= from =example/= would start it 3,937 lines
+behind a live app.
+
+Options, to be chosen deliberately (=a9e4bfea=, superseding =66e1b89b='s
+assumption):
+
+(a) seed =ui0= from textloom — it already *is* a standalone editor on the kit;
+(b) promote the shared engine into tiers 1/2 and de-fork both sides;
+(c) retire =example/= and let textloom be the oracle in place.
+
+Recommended: (b) for the byte-identical library files, (a) for the shell. What
+must *not* happen is a tranche picking one implicitly by touching one side first.
+
+This also surfaces a tier-1 gap the tiering above did not predict:
+=emacs_buffer_editor.dart= is 4,115 lines in =example/= and 5,949 in textloom —
+larger than the kit's own biggest file (=emacs_buffer.dart=, 2,768). Engine code
+that large sitting in an *example* app is mis-tiered: it reads as sample code and
+is treated as disposable while being the largest implementation in the family.
+
+* 3. The migration contract — copy first
+
+The user's instruction, verbatim (2026-07-29):
+
+> "if by move you mean copy and opt in per project for one at a time testing then
+> yes incrementally move but leave the existing code in place until verified"
+
+Applied to the *whole* migration, in five steps per unit of work:
+
+#+begin_src text
+1. COPY      the implementation into frameworks/ui (original untouched)
+2. OPT IN    exactly one consumer, via a path: pin
+3. VERIFY    that consumer's suite green + the app actually run
+4. RETIRE    delete that consumer's fork — the gate, not an afterthought
+5. REPEAT    next consumer; the source repo dies only after its last consumer
+#+end_src
+
+Two properties worth naming:
+
+- *Rollback is free by construction.* Any step aborts by simply not doing step
+  4. Nothing is stranded because nothing was removed. This is invariant I3.
+- *Step 4 is mandatory and gated.* This is the lesson of the =task-board= ORPHAN
+  (census §5): a 2026-07-04 plan promoted three widgets into the kit and never
+  ran the reciprocal adoption, so the family went from one implementation to
+  *two*. Copy-first without a retire step is not a safer migration, it is a
+  duplication generator. Every tranche below therefore carries an explicit exit
+  criterion naming the fork it deletes.
+
+** Why the pin surface forces this
+
+Six apps pin =v0.2.3=, one =v0.2.4=, two =path=, one a bare sha =5a610a6=, one
+nothing. A big-bang move breaks most of them at once. During the bridge period
+the old kit stays alive and pinned; migrated apps move to =frameworks/ui=;
+=ui-kit-private= is archived *after* the last non-decommissioned consumer
+is verified — the user's decision, and the reason the archive is a *gate* (todo
+=b1f5376e=) rather than a cleanup.
+
+*Resolved 2026-07-29:* =frameworks= now has a remote —
+=ssh://github.com/davidwalter0/frameworks= — with =main= and
+=feat/go-framework-foundation= pushed. A cross-repo consumer can therefore take a
+=git:= pin, not only =path:=. This removes the last structural blocker on
+migrating an app that needs a versioned pin.
+
+Consequence for the tranche order: it is no longer necessary to start with the
+two apps that already use =path:= pins (=ghk_dashboard=, =netroute_manager=) purely for
+mechanical reasons, so the order can stay driven by risk (§5) rather than by
+pin mechanics. A =git:= pin should still wait until there is a tag worth pinning
+— an unpinned branch reference reintroduces exactly the pin-drift problem
+=62419295= exists to track.
+
+* 4. Riverpod 3 as the tier-2 standard
+
+User decision, taken with the split in front of them:
+
+| Population | Apps |
+|------------+------|
+| riverpod 3.x | notekeep (decommissioning), task-board |
+| riverpod 2.x | voicelab, word-bank, mail-sweep, alert-log |
+| =provider= | mountbridge |
+| none | textloom, netroute_manager, ghk_dashboard (raw =InheritedWidget=), + kit |
+
+Three facts that make this cheaper than the table suggests:
+
+1. *Zero codegen.* No =@riverpod= annotations and no =riverpod_generator=
+   anywhere in the family. Every provider is hand-written, so 2→3 is an
+   API-surface migration with no build_runner step.
+2. *Tier 1 is unaffected.* =deps-guard= keeps state management out of tier 1, so
+   =mountbridge= (=provider=) and the four state-free apps consume tier 1
+   unchanged, forever. They adopt tier 2 only if and when they choose.
+3. *The first tier-2 consumer is already on Riverpod 3.* =task-board= is on
+   ^3.3.1 and has a pre-written adoption script (census §5) — so the standard
+   gets exercised before any 2.x app is asked to move.
+
+** The =deps-guard= inversion
+
+Today's guard fails the build if state management appears at all:
+
+#+begin_src make
+deps-guard:
+	@if grep -Eq '^[[:space:]]*(flutter_riverpod|riverpod|provider|flex_color_scheme|package_info_plus)[[:space:]]*:' pubspec.yaml; then \
+		echo "ERROR: forbidden dependency in desktop_kit core (must stay state-management agnostic)"; \
+		exit 1; \
+#+end_src
+
+It must become *two* guards, because the two tiers have opposite requirements
+(todo =bd91e7e9=):
+
+- =desktop_kit= — guard unchanged. Any state-management dependency is an error.
+- =app_kit= — inverted: Riverpod 3 is *required*, and =provider= / =riverpod 2.x=
+  are errors. Pinning the major version in the guard is what stops tier 2 from
+  silently straddling the boundary the way the app family does.
+
+A single guard over both tiers cannot express this. Splitting it is the
+mechanical expression of the tier boundary, and it is worth more than the
+convention it encodes because it is checked.
+
+*Explicitly not decided here:* whether a 2.x app must move to Riverpod 3 to
+consume tier 1. It must not, and the guard is what guarantees that. Only tier-2
+adoption requires 3.x.
+
+* 5. Tranche order and exit criteria
+
+Order comes from the census's risk-adjusted work order, not from size. Each
+tranche names the fork it retires — that is its exit criterion.
+
+| # | Tranche | Lines | Exit criterion (the fork deleted) | Todo |
+|---+---------+-------+-----------------------------------|------|
+| 0 | Copy kit → =ui/pkg/desktop_kit=; 98 test files green *unmodified* | 24,905 | none yet — this tranche only copies | =4e934216= |
+| 0b | Split =deps-guard= into tier-1 / tier-2 forms | — | the single conflated guard | =bd91e7e9= |
+| 1 | Byte-identical pair: =mark_state=, =text_motions= — *partition by the decision test first* | 203 | =voicelab='s two copies | =6fbd2211=, =e3e41a04= |
+| 2 | =task-board= ORPHAN — run the 2026-07-04 Part A | 389 | its =adaptive_layout=, =led_indicator=, =resize_handle= | =16086e73= |
+| 3 | About surfaces — pure adoption | 298 | voicelab / ghk / word-bank About files | =84f1b64b= |
+| 3b | =textloom= ↔ =example/= byte-identical library files (=x11_colors= 542, =org_fold_example= 453, and 14 more) — *not all of them merge; see =e3e41a04=* | ~2,900 | the copies that pass the decision test | =a9e4bfea=, =e3e41a04= |
+| 4 | =app_kit= + =ui0= stood up — *requires the =ui0= seed decision first* | new | — (enables 5–7) | =ab8f146b=, =66e1b89b=, =a9e4bfea= |
+| 5 | STALE kit↔voicelab files (six of seven) | 1,844 | voicelab's older copies — *upgrades* | =ee8f014e= |
+| 5b | =romaji_input_buffer= — *AHEAD*: port delta to kit first | 317 | voicelab's copy, only after the port | =ee8f014e= |
+| 6 | Cross-app widget forks — union design | 1,509 | word-bank/voicelab/textloom split + strip + chip forks | =84f1b64b= |
+| 7 | Settings surfaces | ~6,600 | per-app settings forks | =5bf82523= |
+
+Sequencing constraints that are *not* negotiable:
+
+- *Tranche 0 copies verbatim and changes nothing.* 98 test files must pass
+  unmodified. A test edited during the copy destroys the only evidence that the
+  copy was faithful.
+- *No test consolidation during tranche 0* — kit todo =b4749c15=: "pruning …
+  without first promoting the code under test would just delete coverage." The
+  test surface is censused later, not now. That todo also records an OOM from
+  running ~2,656 tests at once; budget the suite.
+- *Tranche 5b before 5's deletion of that file.* =romaji_input_buffer= is the
+  one AHEAD fork; deleting it with the STALE batch regresses =voicelab=.
+- *Tranche 6 after 4.* The cross-app forks have no kit equivalent and no shared
+  substrate until =app_kit= exists; merging them earlier means guessing the
+  shape.
+- *The =ui0= seed decision gates tranche 4.* Standing up =ui0= before choosing
+  between textloom and =example/= as its basis picks the answer by accident. Tranche
+  3b (the byte-identical files) is safe to run first because it is true under
+  every option.
+- *IME work waits on kit todo =fb8c09cb=* (shared =PreeditSession=), which owns
+  the voicelab IME tranche. That todo also records a user correction worth not
+  re-losing: an edge-patch there was rejected as "adding one mis-design to two
+  others."
+
+* 6. Failure modes and their controls
+
+Each row is a way this design fails, with the specific control that catches it.
+
+| Failure | Control |
+|---------+---------|
+| *Promotion without adoption* — shared code lands, forks persist, surface doubles | step 4 is a gated exit criterion per tranche; the =task-board= ORPHAN is the worked example |
+| *Silent regression from an AHEAD fork* | direction column in the census; 5b sequenced before 5 |
+| *STALE upgrade misread as inert deletion* | invariant I4 — name the behaviour delta before merging; read every diff |
+| *=app_kit= becomes a second flat kit* | two-consumer admission rule; =ui0= surface required |
+| *Capability lands but nobody finds it* | =ui0= as oracle, not gallery |
+| *Tier boundary erodes* | split =deps-guard=, checked in CI |
+| *Un-migrated app stops resolving* | invariant I2 — =pub get= per app per tranche; old kit stays pinned |
+| *Test coverage deleted as "duplication"* | =b4749c15= — promote the code under test first |
+| *Suite OOMs and the gate silently passes* | budget the suite; a killed run must read as an error, never as green |
+| *A gate is simply not run* | **currently uncontrolled** — 1 of 12 repos has CI and the kit has none (=17a7476c=). Every gate above is a local =make= invocation today. |
+| *Textually identical files merged that should stay forked* | the decision test — "if this changes, must both change?" (=e3e41a04=) |
+| *A new tier-2 seam re-couples to the platform* | the seam convention: total interface, branch on capability not identity (=74e882ef=) |
+
+That last row is the shared-machine hazard: a killed test run looks identical to
+a passing one in a summary. Any tranche whose gate "passed" inside a window
+where a broad kill occurred must be re-verified, not assumed.
+
+* 7. What this design does *not* do
+
+Stated so the scope is honest:
+
+- It does not migrate =notekeep= — decommissioning; inventoried only.
+- It does not consolidate the *test* surface. Censused later, gated on
+  =b4749c15=.
+- It does not resolve the bridge-release question (cut =v0.2.5= for the LED
+  ticker fix =e321e56=, which is on kit main but in no tag while six consumers
+  pin =v0.2.3=). Todo =ed69fdca=. Blocks nothing today; worsens with time.
+- It does not cut a =frameworks= *tag*. The remote now exists, but a =git:= pin
+  against a moving branch is not a pin; the first versioned consumer needs a tag,
+  and that decision travels with =ed69fdca=.
+- It does not decide whether =k8s-deploy-test-dashboard= is a real app (todo
+  =802c68b9=).
+- It does not touch the Go side beyond the landed installer; see
+  [[file:../../go/docs/go-framework-design.org]].
+
+* Source Verification Notes
+
+** Verified claims
+- All line counts, app counts, pin values and adoption ratios: ✓ measured
+  2026-07-29; method and figures in [[file:flutter-app-inventory.org]] and
+  [[file:duplication-census.org]].
+- Zero =@riverpod= / =riverpod_generator= in the family: ✓ grep across all app
+  trees.
+- =deps-guard= text: ✓ quoted verbatim from =ui-kit-private/Makefile=.
+- The =task-board= promotion/adoption asymmetry: ✓ kit commit =af177de=
+  (2026-07-04) + =task-board/docs/desktop-kit-gap-evaluation.org= Session State
+  showing =[ ] Adoption worktree=.
+- Kit tier-1 state-agnosticism is real, not aspirational: ✓ the guard exists and
+  the kit ships no state dependency.
+- =frameworks= remote: ✓ =ssh://github.com/davidwalter0/frameworks=, added
+  2026-07-29; =main= and =feat/go-framework-foundation= pushed and tracking. (An
+  earlier revision of this document recorded "no git remote" as an open blocker;
+  that is now resolved, not merely re-scoped.)
+
+** Estimated claims
+- The ~6,600-line settings figure is a whole-file upper bound; parts of each file
+  are genuinely app-specific. Marked as a bound in the census, not a target.
+- Tranche line counts are the *fork* sizes, i.e. what deletion may remove — not
+  an estimate of effort. Effort is dominated by diff review on STALE tranches,
+  which line count does not predict.
+
+** Corrections carried in from this session
+- An earlier reading of the =task-board= widgets as "independent
+  reimplementation" was wrong; the direction is app→kit promotion with the
+  adoption half unexecuted. This changed a design conclusion, not just a fact:
+  it is why step 4 of the migration contract is a *gate* rather than a
+  final tidy-up.
+
+** Not verified
+- That each STALE deletion is behaviour-preserving — deliberately not claimed;
+  invariant I4 exists because it usually will not be.
+- Any claim about how the apps behave at runtime. Nothing in this design has been
+  exercised against a running Flutter app yet; =ui/pkg= is still empty.
+
+* Glossary
+
+- tier 1 / =desktop_kit= :: state-agnostic primitives and engines; =value= +
+  =onChanged=; guard forbids state dependencies.
+- tier 2 / =app_kit= :: the opinionated app-shell tier; Riverpod 3; two-consumer
+  admission rule.
+- tier 3 / =ui0= :: the oracle application; a capability without a =ui0= surface
+  is not done.
+- STALE / AHEAD / ORPHAN / ABSENT :: the four fork causes; see census §"How to
+  read".
+- bridge period :: while =ui-kit-private= stays alive and pinned for
+  un-migrated apps.
+- retire step :: step 4 of the migration contract; deleting the consumer's fork,
+  as a gated exit criterion.
+
+* Cross-References
+
+- Inventory + the two README tables: [[file:flutter-app-inventory.org]]
+- Measured forks: [[file:duplication-census.org]]
+- Go framework: [[file:../../go/docs/go-framework-design.org]]
+- Session trace: [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Governing rule (adopt a foundation module, never fork):
+  [[file:~/go/src/github.com/davidwalter0/ui-kit-private/docs/design/support-binary-module-kit.org]]
+- Prior art (a pre-written tranche-2 script):
+  [[file:~/go/src/github.com/davidwalter0/task-board/docs/desktop-kit-gap-evaluation.org]]
+
+* Footnotes
+
+[fn:onetier] The two-consumer admission rule for tier 2 is the user's standing
+position that a package with one consumer is that project's code. It is recorded
+here as a *gate* because the kit's own flatness — primitives and a 2,768-line
+editor in one package — is what created the missing shell tier in the first
+place.

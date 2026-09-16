@@ -1,0 +1,435 @@
+:PROPERTIES:
+:ID:       frameworks-go-framework-design
+:END:
+#+title: Go framework design — frameworks/go
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+=pkg/installer= is landed, gated and committed (=721fdf3=); it is the module's
+first and currently only package. This document records its design and
+extrapolates the remaining Go surface — support-binary tooling, metrics,
+logging, portal — from a measured survey of the eleven repos.
+
+** Completed
+- [X] Module layout, build/check contract
+- [X] =pkg/installer= design, including two hardenings absent from all three
+  source forks
+- [X] Survey of the Go surface across 11 repos: tooling, metrics, logging, portal
+- [X] Reuse candidates ranked, with the one *disqualifying* finding stated
+
+** Next Steps
+- [ ] Wire the first consumer (=voicelab=) and verify a real packaged install
+  (todo =2e277687=)
+- [ ] Decide on =observe= adoption vs copy (todo =c9b3e718=)
+- [ ] Cosign signing for installer payloads, reusing =go-version/pkg/tools=
+  (todo =bd9c7261=)
+
+* 1. Module layout and contract
+
+#+begin_src text
+frameworks/go/
+  go.mod          module github.com/davidwalter0/frameworks/go, go 1.26.5
+  Makefile        all build install check lint vet vuln test cov cov-html tidy fmt fmt-check clean
+  pkg/installer/  landed
+  cmd/            empty
+  docs/ tools/ scripts/
+#+end_src
+
+Conventions applied, per the house Go rules:
+
+- =pkg/<lib>= for libraries, =cmd/<bin>= for binaries. *No =internal/=* — it
+  would break sharing across the sibling modules that are the whole point.
+- Build output to =bin/=, never the repo root; the build target loops =cmd/*/=
+  with =-o bin/<name>=.
+- =CGO_ENABLED=0= exported at the Makefile level: the installer must be a single
+  static binary that runs on a host with no toolchain.
+- =check: fmt-check lint vet vuln test cov= — the gate, in that order, first
+  failure stops.
+- =cov= emits the mandated per-package table to stdout; =cov-html= is separate.
+- Flags via =github.com/spf13/pflag= — the sole direct dependency, and already
+  the house convention (measured: 45 files across 10 of 11 repos use it).
+
+* 2. =pkg/installer= — the landed extraction
+
+** What it replaces
+
+Three near-identical self-extracting installers, 1,016 lines in primary
+checkouts:
+
+| Fork | Lines | What it contributed to the union |
+|------+-------+----------------------------------|
+| =gatehub-kit/cmd/dashboard-installer/installer.go= | 440 | =index.theme= ownership model |
+| =word-bank/cmd/installer/installer.go= | 291 | full-app-dir clean; app-id =.desktop= naming (a Wayland finding) |
+| =voicelab/cmd/installer/installer.go= | 285 | multi-launcher shape |
+
+Plus 843 lines of forked tests (263 + 398 + 182).
+
+Built from the *union of behaviour*, not by adopting the largest fork. Result:
+one =Spec=-driven package plus roughly 30 lines of wiring per consumer.
+
+** Shape
+
+#+begin_src go
+type Launcher struct { Target, Name, Blurb string }
+
+type Spec struct {
+    AppID, DisplayName, ShareSubdir, DesktopSource string
+    DesktopNaming DesktopNaming   // DesktopByAppID (default) | DesktopByBasename
+    Launchers     []Launcher
+    CleanMode     CleanMode       // CleanAppDir (default) | CleanSubdirs
+    CleanSubdirs  []string
+    IconRels      []string
+    Notes         []string
+}
+
+func (s Spec) Validate() error
+func (s Spec) LayoutFor(prefix string) Layout
+
+func Install(s Spec, payload []byte, version string, opt Options) error
+func Uninstall(s Spec, opt Options) error
+func Run(s Spec, payload []byte, version string)   // the whole main() of a consumer
+#+end_src
+
+Design choices worth recording because they were contested by the forks:
+
+- *Zero value is correct.* =CleanAppDir= and =DesktopByAppID= are the defaults
+  because they are what a new consumer should want; the alternatives exist only
+  because =ghk= and =voicelab= respectively need them.
+- *=Validate()= runs before anything is written.* A malformed =Spec= must not
+  produce a half-install; there is a test asserting no filesystem effect.
+- *=Run= is the consumer's entire =main()=.* This is what makes the wiring ~30
+  lines and therefore what makes adoption cheaper than keeping the fork — the
+  economics of the migration, not a convenience.
+- *Atomic =CopyFile= (temp + chmod + rename).* =voicelab= reached for its own
+  =pkg/fsutil.CopyFile=; =ghk= had a local atomic version. The shared package
+  takes =ghk='s, because =gtk-update-icon-cache= will happily cache a torn icon
+  file in its torn state.
+- *=progress= type as the single documented error-discard seam.* Rather than
+  scatter =_ =2= across a dozen =fmt.Fprintf= calls to satisfy errcheck, one
+  small type states the decision once: progress output failing is not a reason
+  to fail an install.
+
+** Two hardenings that were in none of the three forks
+
+1. *Symlink target escape.* All three forks guarded the *location* of a tar
+   entry (zip-slip) but not a symlink's *target*. An archive could therefore
+   plant a link pointing outside the prefix, and a later write through it
+   escapes the tree. =checkLinkTarget= now rejects absolute targets and relative
+   targets that resolve outside the destination. Three tests pin it (reject
+   absolute, reject escaping relative, allow internal).
+
+2. *=ShareSubdir= traversal — found *by a test*, not by review.* The first
+   implementation validated with a =filepath.Clean= round-trip. That does not
+   work:
+
+   #+begin_src go
+   filepath.Clean("../evil") == "../evil"   // unchanged — the check never fires
+   #+end_src
+
+   =isSafeRelPath= now rejects any =..= segment explicitly. Recorded because the
+   provenance matters: a reviewer reading the round-trip found it plausible, and
+   only the test disagreed.
+
+Bounded decompression (=io.CopyN= against the header size) came across from the
+forks and is retained.
+
+** Gate result at commit =721fdf3=
+
+| Category | Result |
+|----------+--------|
+| fmt-check | ✓ clean |
+| lint | ✓ golangci-lint, 0 issues |
+| vet | ✓ clean |
+| vuln | ✓ govulncheck, no vulnerabilities |
+| test | ✓ 20 tests |
+| cov | ✓ 74.2% (recorded, not enforced) |
+| integration-boot | n/a — ecosystem gap, no long-running service in this module |
+| bench | n/a — ecosystem gap, no benchmarks |
+
+The uncovered remainder is mostly =Run= (flag parsing, =os.Exit=) and the
+=gtk-update-icon-cache= branches, which need a real desktop tool present.
+
+** Honest remaining risk
+
+*No consumer is wired.* The package is proven against synthetic payloads only.
+=word-bank= bundles GTK via linuxdeploy while =voicelab= links system GTK3, and
+only a real packaging run exercises that difference. Also not implemented:
+=libdartjni.so= stripping, which =word-bank/lib-appdir.sh:92= does today and the
+shared package should own. Both tracked in =2e277687=.
+
+* 3. Survey — the rest of the Go surface
+
+Measured 2026-07-29 across all 11 repos, excluding =vendor/= and =.worktree/=.
+Counts are *files containing* the marker.
+
+| Repo | .go files | prometheus | log/slog | pflag |
+|------+-----------+------------+----------+-------|
+| netroute | 161 | 0 | 0 | 1 |
+| gatehub-kit | 131 | *9* | 0 | 16 |
+| mountbridge | 118 | 0 | 0 | 8 |
+| voicelab | 115 | 0 | 1 | 10 |
+| go-version | 105 | 0 | 0 | 0 |
+| alert-log | 67 | 0 | *7* | 1 |
+| word-bank | 48 | 0 | 0 | 5 |
+| mail-sweep | 34 | 0 | 0 | 2 |
+| task-board | 20 | 0 | 0 | 0 |
+| textloom | 17 | 0 | 0 | 1 |
+| notekeep | 14 | 0 | 0 | 1 |
+
+Four findings, in descending order of usefulness:
+
+** 3.1 =pflag= is a genuine, already-honoured convention
+
+45 files across 10 of 11 repos. It needs no framework work — it is the one
+cross-repo convention that already holds, and =pkg/installer= conforms to it.
+Recording it matters mainly so nobody "standardises" it again.
+
+** 3.2 Metrics are concentrated in one place, and that place is reusable
+
+Only =gatehub-kit= has Prometheus instrumentation, and it is not scattered — it
+is a coherent =observe/= package:
+
+| File | Source | Test |
+|------+--------+------|
+| =cost_middleware.go= | 472 | 835 |
+| =prometheus.go= | 245 | 265 |
+| =metrics.go= | 185 | — |
+| =events.go= | 143 | 159 |
+| =cost_format.go= | 105 | — |
+| =otel.go= | 76 | 195 |
+| =tokens.go= | 64 | 84 |
+| =metrics_middleware.go= | 62 | 109 |
+| *Total* | *1,352* | *1,647* |
+
+Module path is =github.com/davidwalter0/gatehub-kit= with *no =internal/=
+directories*, so =observe= is directly importable today. A near-1:1 test ratio
+makes it credible as a foundation rather than a starting point.
+
+*This is a one-consumer package.* By the standing rule — a package with exactly
+one consumer is that project's code, not shared infrastructure — it does **not**
+get hoisted into =frameworks/go= now. The correct move is to leave it in place
+and hoist only when a *second* consumer genuinely needs it. Todo =c9b3e718=
+tracks the decision; the recommendation recorded here is *adopt in place*
+(import =gatehub-kit/observe=) rather than copy, precisely so the second
+consumer arrives without creating a fork.
+
+** 3.3 Logging is the real gap — and it is a gap, not a duplication
+
+=log/slog= appears in exactly two repos: =alert-log= (7 files, its
+daemon/capture/pipeline/api stack) and =voicelab= (1 file). Nine repos use
+neither =slog= nor any shared logging package.
+
+So there is nothing to consolidate; there is something *missing*. That makes it
+a different kind of work from everything in the UI census: no fork to retire, no
+behaviour to preserve, and consequently no urgency created by drift. Deferred
+deliberately, and the deferral is recorded rather than left implicit — a
+=frameworks/go/pkg/logging= built speculatively, with no second consumer asking
+for it, would violate the same one-consumer rule as §3.2.
+
+** 3.4 Portal — the engine already does it; do not build it
+
+Two corrections here, in sequence, because the first one alone leads to the wrong
+recommendation.
+
+*Correction 1 — the grep was measuring build artifacts.* An initial grep
+suggested =word-bank= (18 files) and =alert-log= (2) integrated
+=xdg-desktop-portal=. Every hit is inside
+=dist/*/AppDir/apprun-hooks/linuxdeploy-plugin-gtk.sh= — a 24-line hook script
+=linuxdeploy='s GTK plugin writes into a bundle. The ten =word-bank= hits are
+ten stale release bundles each carrying the same file. *No application code in
+this family talks to a portal.*
+
+*Correction 2 — and this is the one that decides the design.* "No app code talks
+to a portal" is not a gap, because **the Flutter engine talks to it for us.**
+Verified against the installed SDK (Flutter 3.44.2, engine =04efd7c=), not
+recalled: =flutter/shell/platform/linux/fl_settings_portal.cc= declares six
+settings it reads over the portal —
+
+| Key | Namespace | Reaches Dart as |
+|-----+-----------+-----------------|
+| =color-scheme= (uint32) | =org.freedesktop.appearance= | =platformBrightness= |
+| =high-contrast= (bool) | =org.gnome.desktop.a11y.interface= | =MediaQuery.highContrastOf= |
+| =enable-animations= (bool) | =org.gnome.desktop.interface= | =MediaQuery.disableAnimationsOf= |
+| =text-scaling-factor= (double) | =org.gnome.desktop.interface= | text scaler |
+| =clock-format= (string) | =org.gnome.desktop.interface= | — |
+| =gtk-theme= (string) | =org.gnome.desktop.interface= | — |
+
+=COLOR_SCHEME_PREFER_DARK= maps to =FL_COLOR_SCHEME_DARK= and is forwarded via
+=fl_settings_handler.cc='s =to_platform_brightness()=. So the kit's *default*
+=ThemeMode.system= — resolved at =appearance_pane.dart:312= through
+=MediaQuery.platformBrightnessOf=, and used by 7 of 9 apps — *already follows the
+desktop dark preference through the portal today*.
+
+*Therefore: do not write app-level portal code for appearance.* It would
+duplicate the engine and create a second, conflicting source of truth. This is a
+reason not to build, not a gap to fill.
+
+*The real finding underneath it* (filed as =e6b972e9=, and it needs no portal
+code — only =MediaQuery=): the kit consumes these accessibility signals in
+exactly *one* file, =status/led_indicator.dart= (lines 119–120), while
+=theme/= carries ~1,000 lines of APCA/WCAG/HCT contrast machinery that ignores
+the desktop's own =high-contrast= preference. The one file that gets it right is
+the widget promoted *from* =task-board=; the kit's own theme tier does not.
+
+There is also a probable *double-scaling* defect: the engine surfaces
+=text-scaling-factor= while =theme/ui_scale.dart:51= applies its own user scale
+with =mediaQuery.copyWith(textScaler: ...)=, which *replaces* the inherited
+scaler. So a system factor of 1.25 with a user scale of 1.2 is either silently
+clobbered or compounded to 1.5 depending on ordering. Both are defects; neither
+is visible unless tested at a non-default system text scale.
+
+*Where a portal would still be genuinely needed* — all out of scope, none of it
+consolidation: =Inhibit= (plausibly real for =voicelab=, preventing sleep
+during a long render), =Background= (autostart for the =mountbridge= and
+=alert-log= daemons), =Secrets= (OAuth token storage — but that is
+Secret Service, a separate question). =FileChooser= only matters under
+sandboxing, and these ship unsandboxed AppImage/AppDir, so it does not apply.
+=alert-log= needs the =org.freedesktop.Notifications= D-Bus
+interface, not the portal, because it *captures* notifications.
+
+*Hygiene:* =dist/= carries many stale release bundles (=word-bank= alone has ≥9
+versioned AppDirs). Exclude =dist/= as well as =.worktree/= and =vendor/= from
+every census re-run — otherwise generated artifacts masquerade as source, which
+is exactly what produced Correction 1.
+
+* 4. Cosign signing — reuse, not reinvention
+
+=go-version/pkg/tools/sign.go= (426 lines) already implements what the installer
+needs for signed payloads: =GenerateKeyPair=, =SignBinary=,
+=VerifyBinarySignature=, =VerifySignatures=, and the =buildSignArgs= /
+=buildVerifyArgs= seams.
+
+Why it is a good fit rather than merely adjacent:
+
+- *Stdlib-only imports* — =crypto/sha256=, =errors=, =fmt=, =os=, =os/exec=,
+  =path/filepath=, =strings=. No sigstore Go dependency, so adopting it does not
+  drag a dependency tree into a package whose whole point is a single static
+  binary.
+- *No coupling to its host* — zero references to =go-version='s registry or tools
+  types.
+- *Shell-out via a =cosignRunner= seam*, which is what makes it testable without
+  a real cosign binary.
+- *Fingerprint pinning is the load-bearing control* — it is what makes a
+  key-swap attack fail, and it is already implemented.
+
+Design constraint from prior measurement, so it is not re-litigated:
+=session-2026-05-17.org= records that all six probed cosign-bundle URLs returned
+*403* and the Rekor index returned =[]=. Do **not** design around fetching
+upstream sigstore bundles; key-based offline verification is the working path.
+
+Tracked in =bd9c7261=. That todo also carries a correction: an earlier note of
+mine called installer signing "new territory, not mirror" — wrong; this
+implementation already existed.
+
+* 5. What this design defers, and why each deferral is safe
+
+| Deferred | Reason it is safe to defer |
+|----------+----------------------------|
+| =pkg/logging= | no duplication exists — 9 of 11 repos have no logging surface at all; building it now has one consumer at most |
+| hoisting =observe= | one consumer today; the rule says leave it and import in place |
+| portal integration (appearance) | *actively declined* — the Flutter engine already reads the portal; app-level code would be a second conflicting source of truth |
+| portal integration (Inhibit / Background / Secrets) | real but per-app needs, not shared surface; no drift accumulating |
+| =libdartjni.so= stripping | belongs to the first real packaging run (=2e277687=), where it can be verified rather than guessed |
+| coverage threshold | 74.2% recorded; a threshold set before a consumer is wired would be fitted to synthetic tests |
+
+The pattern: each deferral is justified by *absence of drift*. Duplication that
+is not accumulating does not force a framework, and the one-consumer rule is the
+control that stops =frameworks/go= from filling with speculative packages — the
+failure the UI side is already paying for in reverse.
+
+* Source Verification Notes
+
+** Verified claims
+- Module path, Go version, sole dependency: ✓ read from =go.mod=.
+- Gate results at =721fdf3=: ✓ the run recorded in the session trace.
+- Installer fork line counts (440 / 291 / 285; tests 263 / 398 / 182): ✓ =wc -l=
+  on primary checkouts, =.worktree= excluded.
+- =filepath.Clean("../evil")= is unchanged: ✓ demonstrated by the failing test
+  that prompted the fix.
+- Per-repo Go survey table: ✓ =find= + =grep -rl= per marker, 2026-07-29,
+  excluding =vendor/= and =.worktree/=.
+- =observe/= file inventory and line counts: ✓ =wc -l= on
+  =gatehub-kit/observe/*.go=.
+- =observe= is importable: ✓ module is =github.com/davidwalter0/gatehub-kit=;
+  =find -type d -name internal= returns nothing.
+- =go-version/pkg/tools/sign.go= is stdlib-only and host-decoupled: ✓ read its
+  import block and grepped for host types.
+- Cosign bundle 403s / empty Rekor index: ✓ recorded in
+  =session-2026-05-17.org= from the original probe.
+- =frameworks= remote: ✓ =ssh://github.com/davidwalter0/frameworks=, added
+  2026-07-29; =main= and =feat/go-framework-foundation= pushed and tracking. This
+  matters on the Go side too — a sibling module can now =require= this module by
+  version rather than needing a =replace= directive to a local path.
+
+** Corrections made
+- *Original claim:* =word-bank= (18 files) and =alert-log= (2)
+  integrate =xdg-desktop-portal=. *Corrected to:* no application code in the
+  family talks to a portal; every hit is a =linuxdeploy-plugin-gtk.sh= hook
+  inside a =dist/*/AppDir/= build bundle. *Revealed by:* listing the matching
+  paths instead of trusting the file count.
+- *Second, larger correction:* I then framed portal work as "greenfield design".
+  That was also wrong, and in the more consequential direction — it implies
+  something should be built. *Corrected to:* the Flutter engine already consumes
+  =org.freedesktop.portal.Settings=; app-level portal code for appearance is
+  actively undesirable. *Revealed by:* reading
+  =fl_settings_portal.cc= / =fl_settings_handler.cc= in the installed SDK rather
+  than reasoning about what Flutter Linux "probably" supports. The useful
+  finding turned out to be the reverse of a missing feature: a signal already
+  arriving and being ignored by the kit's theme tier (=e6b972e9=).
+- *Original claim (earlier session):* installer signing is "new territory, not
+  mirror". *Corrected to:* =go-version/pkg/tools/sign.go= already implements it;
+  filed as =bd9c7261=.
+
+** Estimated claims
+- "~30 lines of wiring per consumer" is derived from the =Spec= + =Run= shape,
+  not yet measured against a wired consumer. It is the claim the =2e277687=
+  tranche tests.
+- The recommendation to *adopt =observe= in place rather than copy* is a
+  judgement from the one-consumer rule, not a measurement. Flagged as the open
+  decision in =c9b3e718=.
+
+** Not verified
+- That =pkg/installer= produces a working install from a real Flutter bundle.
+  Synthetic payloads only so far; this is the module's principal open risk.
+- Whether =observe= would need modification to serve a second consumer — not
+  assessed, because no second consumer exists to assess it against.
+
+* Glossary
+
+- payload :: the gzip tar of a staged install tree, embedded via =go:embed=
+  behind the =withpayload= build tag so a default =go build= still works.
+- zip-slip :: an archive entry whose path escapes the extraction root.
+- =Spec= :: the per-application description that turns the shared installer into
+  that app's installer.
+- one-consumer rule :: a package with exactly one consumer is that project's
+  code, not shared infrastructure; the admission gate for this module.
+- =observe= :: =gatehub-kit='s metrics/cost/OTel package, 1,352 source lines with
+  a near-1:1 test ratio.
+
+* Cross-References
+
+- UI-side design: [[file:../../ui/docs/framework-subsumption-design.org]]
+- Measured forks incl. the installer triplication:
+  [[file:../../ui/docs/duplication-census.org]]
+- App inventory: [[file:../../ui/docs/flutter-app-inventory.org]]
+- Session trace:
+  [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Cosign implementation to reuse:
+  [[file:~/go/src/github.com/davidwalter0/go-version/pkg/tools/sign.go]]
+- Metrics package surveyed:
+  [[file:~/go/src/github.com/davidwalter0/gatehub-kit/observe/]]
+- Governing rule (adopt a foundation module, never fork):
+  [[file:~/go/src/github.com/davidwalter0/ui-kit-private/docs/design/support-binary-module-kit.org]]
+
+* Footnotes
+
+[fn:excl] Every =find=/=grep= census in this document excludes =vendor/=,
+=.worktree/= *and* =dist/=. The first two inflate counts (six =gatehub-kit=
+worktrees each hold the 440-line installer); the third caused an outright wrong
+conclusion about portal support, which is why it is named here rather than left
+to convention.

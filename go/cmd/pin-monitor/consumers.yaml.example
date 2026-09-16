@@ -1,0 +1,15 @@
+# pin-monitor config: the shared dep + every consumer's pubspec.
+#
+# This is an EXAMPLE. The real consumers.yaml is host-specific (it names
+# sibling checkouts on disk) and is intentionally not committed — copy this
+# file to consumers.yaml next to the binary (or pass --config) and fill in
+# your own paths.
+dep: desktop_kit
+dep_repo: /path/to/your-desktop-kit-repo
+consumers:
+  - name: app-one
+    pubspec: /path/to/app-one/pubspec.yaml
+    branch: main
+  - name: app-two
+    pubspec: /path/to/app-two/ui/app-two-ui/pubspec.yaml
+    branch: main

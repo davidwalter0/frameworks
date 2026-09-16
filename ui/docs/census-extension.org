@@ -1,0 +1,622 @@
+:PROPERTIES:
+:ID:       frameworks-census-extension-2026-07-29
+:END:
+#+title: Duplication Census — Extension to the Five Uncrossed Apps
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Complete. All three cross-checks (vs kit, vs example, app-vs-app pairwise) run
+for alert-log, mail-sweep, mountbridge, netroute_manager, ghk_dashboard;
+notekeep inventoried cheaply per instruction (not deep-analysed, decommission
+in progress).
+
+** In Progress
+- (none — extension complete)
+
+** Completed
+- [X] Path inventories built for kit, example, and all 5 apps, excluding
+  =vendor/=, =.worktree/=, =dist/=, and generated Dart (=*.freezed.dart=,
+  =*.g.dart=, plus netroute_manager's generated protobuf files, caught by manual
+  check since they don't match the freezed/g pattern).
+- [X] vs-kit cross-check (basename intersection + line counts + =diff -q= +
+  sorted set-difference) for all 5 apps.
+- [X] vs-example cross-check, same method, for all 5 apps.
+- [X] All 10 app-vs-app pairs (5 choose 2) cross-checked.
+- [X] Source-read verification (not just line counts) for every candidate
+  pair with a non-trivial basename match, to classify STALE/AHEAD/ORPHAN/
+  ABSENT vs. "false lead — coincidental name, unrelated purpose."
+- [X] Deliberate same-purpose/different-name search: confirmed a
+  badge/chip/pill cluster (4 files, 3 apps) and a banner cluster (5 files,
+  3 apps) invisible to any basename-based method.
+- [X] notekeep cheap inventory (basename overlap only, no source reads).
+
+** Next Steps
+- None from this task. Recommendations for follow-on work are in
+  [[*Recommendation — where this fits in the tranche order]].
+
+* 0. Method recap and exclusion set
+
+Same method as the rest of [[file:duplication-census.org]] ("How to read this
+document" read first, taxonomy not re-derived here):
+
+| Cause  | Meaning                                              | Remedy                                    |
+|--------+-------------------------------------------------------+--------------------------------------------|
+| STALE  | app predates/lags the kit; kit copy newer and larger  | delete app copy — an upgrade              |
+| AHEAD  | app copy is newer than the kit's                     | port delta into kit first, then delete    |
+| ORPHAN | promoted app→kit, adoption never executed            | run the adoption                          |
+| ABSENT | no kit equivalent; two+ apps forked in parallel      | design the shared component from the union |
+
+Two diff measures, as before: unsorted =diff | grep -c '^[<>]'= approximates
+patch size (order-sensitive); sorted =diff <(sort A) <(sort B)= is the
+set-difference (order-insensitive, answers "is this the same code"). Every
+table below states which is used; sorted is used throughout except where
+noted, because most pairs here are independently-authored, not
+literal-copy-then-edit, so unsorted edit distance would overstate divergence
+from reordering alone.
+
+*Exclusion set, applied to every =find=/=grep= below:* =vendor/=,
+=.worktree/=, =dist/=, =*.freezed.dart=, =*.g.dart=. One additional case not
+covered by that pattern: =netroute_manager= ships 4 generated protobuf files under
+=lib/src/generated/lbmanager/v1/= (=lbmanager.pb.dart= 1388,
+=lbmanager.pbenum.dart= 61, =lbmanager.pbgrpc.dart= 187,
+=lbmanager.pbjson.dart= 342 — 1,978 lines, header literally reads "Generated
+code. Do not modify."). None of the four share a basename with any other
+source in this census, so excluding them changes no finding, but they are
+flagged here because the brief's hygiene warning is specifically about counts
+that include generated code unlabeled — this is the concrete instance for
+this extension. All counts below are on the excluded set (dart-file counts
+per app, confirmed against the brief): nh 60→50 real (10 generated), gu 32,
+gd 26, lb 22 (of which 4 are the generated protobuf, 18 hand-written), ghk 36.
+
+* 1. vs-kit cross-check
+
+Shared basenames found: 3 in alert-log, 1 in mountbridge, 0 in
+mail-sweep, netroute_manager, ghk_dashboard.
+
+| App | File                  | App lines | Kit lines | Identity | Sorted diff | Direction | Cause |
+|-----+-----------------------+-----------+-----------+----------+-------------+-----------+-------|
+| nh  | =host_ui_font.dart=   |        18 |        67 | differs  |          77 | kit +49   | *see note* |
+| nh  | =presets.dart=        |        42 |       130 | differs  |         132 | kit +88   | *see note* |
+| nh  | =appearance_pane.dart= |      513 |      1004 | differs  |        1115 | kit +491  | *see note* |
+| gd  | =version_info.dart=   |        27 |        78 | differs  |          65 | kit +51   | *STALE*   |
+
+No byte-identical file in any vs-kit pair (unlike the =mark_state.dart= /
+=text_motions.dart= pair already recorded for voicelab).
+
+** Reading these — three are NOT forks, one is
+
+*=host_ui_font.dart= — ORPHAN, already resolved.* Kit's own docstring says it
+directly: /"Ported from alert-log — the app-side Riverpod
+=hostUiFontProvider= is intentionally OMITTED so the core stays
+state-management agnostic."/ nh's 18-line remainder is the thin Riverpod glue
++ a re-export of the kit's =detectHostUiFont=/=parseGnomeFontName=. This is
+the *rare* case of a promotion that also got its adoption step completed —
+the same class of event as the =task-board= ORPHAN in
+[[file:duplication-census.org::*5. The =task-board= ORPHAN]], except this one
+finished. Not a finding requiring action.
+
+*=presets.dart= — legitimate customization, not staleness.* nh imports kit's
+=ThemePreset=/=NamedColor= types and kit's shared foreground/background
+swatch lists (re-exported, "so the Appearance pane keeps a single
+theme/presets import"), then *hides* kit's own =kThemePresets=/=presetByName=
+to substitute an app-specific list bound to =NotifPalette= (a =DeskPalette=
+subclass carrying per-notification-type colours the kit has no reason to
+know about). Kit being larger reflects kit owning more preset variety, not nh
+lagging — nh's file is doing something kit's isn't (palette-typed binding).
+Classify as *ABSENT* only in the narrow sense that "a NotifPalette-bound
+preset list" has no kit equivalent by construction (it's app-domain-specific)
+— **not** a candidate for deletion.
+
+*=appearance_pane.dart= — same pattern, larger scale.* nh's docstring:
+/"Hide desktop_kit's own preset list/helper — this app uses its
+NotifPalette-bound list from theme/presets.dart (same ThemePreset type,
+different data)."/ This file is *already counted* in
+[[file:duplication-census.org::*Settings persistence and presentation]]'s
+513-line entry for alert-log — this cross-check adds the
+classification that entry lacked: *not staleness, a deliberate customization
+layer over the kit's generic pane.* No action implied.
+
+*=version_info.dart= (mountbridge) — genuine STALE, new finding.* Kit's version
+is a documented, generalized superset: same three fields (=version=,
+=commit=, =date=), same =displayString= getter behaviour, but kit defaults
+empty-string instead of gd's =\'unknown\'= fallback, and kit's
+=VersionInfo.fromMap= is a drop-in replacement for gd's
+=VersionInfo.fromDbusMap= (same map-shape, same null-safety fallback
+pattern) — verified by reading both factories in full. This *is* a case
+where the app copy predates the kit's generalization and is a strict subset;
+deleting gd's copy in favor of =desktop_kit='s (with call sites switched from
+=.fromDbusMap= to =.fromMap= and the =\'unknown\'= display fallback ported in,
+a few lines) is a safe upgrade. 27 lines removed, no functionality lost.
+
+* 2. vs-example cross-check — the check that found textloom
+
+This is the check that matters most for closing the blind spot, because it's
+the one that found the family's largest fork elsewhere. Result for all five
+apps: *no fork of the example gallery was found.*
+
+| App | File          | App lines | Example lines | Sorted diff | Verdict |
+|-----+---------------+-----------+----------------+-------------+---------|
+| nh  | =main.dart=   |       106 |            557 |         621 | not a fork — see below |
+| nh  | =metrics.dart= |        35 |            147 |         168 | false lead — different domain |
+| gu  | =main.dart=   |        32 |            557 |         571 | not a fork |
+| gd  | =main.dart=   |        53 |            557 |         568 | not a fork |
+| lb  | =main.dart=   |        97 |            557 |         586 | not a fork |
+| ghk | =main.dart=   |       108 |            557 |         589 | not a fork |
+
+**Why =main.dart= is not evidence of a fork here, unlike textloom's.** textloom's
+=main.dart= was *958* lines — bigger than the example's own 557, because
+textloom's =main.dart= absorbed the whole gallery-navigation shell the example
+provides. Each of these five apps' =main.dart= is 32–108 lines: a normal,
+single-purpose Flutter entrypoint (=runApp=, provider/DI wiring, one
+=MaterialApp=). A shared basename between any two Flutter apps' entrypoints
+is close to unavoidable and carries no signal by itself; the *direction and
+magnitude* (all five are 5×–17× *smaller* than the example, never larger) is
+what rules out the textloom shape here. If any of these apps' =main.dart= had
+come in *larger* than 557 and absorbed gallery-style page routing, that would
+have been the signal to chase — none did.
+
+**=metrics.dart= is a coincidental namesake, confirmed by reading both.**
+example's =contrast_lab/metrics.dart= computes WCAG contrast-ratio metrics
+for the theme-lab demo. nh's =core/models/metrics.dart= is a =freezed=
+data class (=AppCount=, =Metrics= with =ingested=/=deduped=/=rateDropped=/
+etc. fields) describing the notification-capture pipeline's counters. Same
+noun, unrelated domains, unrelated code. No finding.
+
+**Aggregate for this section: zero new example-forks found.** The blind spot
+this task exists to close — an adoption-ratio measure being unable to see a
+fork of =example/=, because =example/= isn't =desktop_kit= — does not recur
+in any of these five apps. This is worth stating with the same confidence as
+a positive finding: it was checked, by the same method that caught textloom, and
+came back clean.
+
+* 3. App-vs-app cross-check — never run before, and where the new findings are
+
+Shared-basename counts, all 10 pairs:
+
+| Pair            | Shared basenames |
+|------------------+-------------------|
+| nh vs gu         |                 8 |
+| lb vs ghk        |                 7 |
+| nh vs gd         |                 3 |
+| gu vs gd         |                 3 |
+| gu vs lb         |                 2 |
+| nh vs lb         |                 1 |
+| nh vs ghk        |                 1 |
+| gu vs ghk        |                 1 |
+| gd vs lb         |                 1 |
+| gd vs ghk        |                 1 |
+
+Two pairs — nh/gu and lb/ghk — are far above the rest and are the two
+substantive findings in this section. The remaining pairs share only
+=main.dart= (see §2's reasoning — not a signal on its own).
+
+** 3.1 =alert-log= vs =mail-sweep= — a shared Riverpod app skeleton
+
+| File                        | nh lines | gu lines | Sorted diff | Direction  |
+|-----------------------------+----------+----------+-------------+------------|
+| =app_config.dart=          |       10 |       11 |          13 | gu +1      |
+| =app_shell.dart=           |       53 |      103 |         114 | gu +50     |
+| =main.dart=                |      106 |       32 |         100 | nh +74     |
+| =overview_providers.dart=  |       35 |       19 |          42 | nh +16     |
+| =overview_view.dart=       |      154 |      129 |         207 | nh +25     |
+| =settings_providers.dart=  |        7 |       40 |          41 | gu +33     |
+| =settings_view.dart=       |      309 |      161 |         376 | nh +148    |
+| =ui_settings.dart=         |      165 |       24 |         173 | nh +141    |
+| *Total*                     |    *839* |    *519* |    *1,066*  | mixed      |
+
+Same *path convention* in both apps (=features/overview/presentation/
+overview_view.dart= + =features/overview/providers/overview_providers.dart=,
+=app/app_shell.dart=, =app/app_config.dart=), same class names
+(=OverviewView extends ConsumerWidget=, reading =metricsProvider=/
+=statusProvider=+=healthProvider= respectively), same Riverpod idiom
+throughout. Read in full for =overview_view.dart= and =app_config.dart= —
+this is not eight coincidences, it's one architecture used twice. Cause:
+*ABSENT* (no kit equivalent for a Riverpod app-shell/overview/settings
+feature scaffold) — this is a parallel-invention fork, not one app copying
+the other's file verbatim (no pair is identical or near-identical; every
+pair differs substantially). Direction is genuinely mixed (nh larger in 5 of
+8, gu in 3 of 8) — there is no single "port the delta" direction here because
+these are independently-elaborated implementations of the same shape, not
+one file lagging the other.
+
+=app_config.dart= is the clearest minimal case: both are a "static const
+config" holder class, 10–11 lines, doing the same job (base URL / app ID /
+polling interval constants) — about as close to unavoidable boilerplate as a
+Flutter app gets, but it is still zero-abstraction duplication of a shape
+that recurs verbatim-in-spirit across the family.
+
+** 3.2 =netroute_manager= vs =ghk_dashboard= — the biggest new finding: a shared raw-InheritedWidget scaffold
+
+| File                    | lb lines | ghk lines | Sorted diff | Direction |
+|-------------------------+----------+-----------+-------------+-----------|
+| =inherited_app.dart=   |       24 |        18 |          22 | lb +6     |
+| =app_state.dart=       |       53 |       115 |         112 | ghk +62   |
+| =categories.dart=      |      165 |       149 |         174 | lb +16    |
+| =settings_screen.dart= |       48 |        53 |          37 | ghk +5    |
+| =shell.dart=           |      116 |       399 |         353 | ghk +283  |
+| =logs_screen.dart=     |      493 |     1,074 |         857 | ghk +581  |
+| =main.dart=            |       97 |       108 |          83 | ghk +11   |
+| *Total*                 |  *996*   | *1,916*   |   *1,638*   | ghk larger in 5/7 |
+
+This is the strongest evidence of shared ancestry in the whole extension,
+and it is *entirely invisible* to any adoption-ratio or basename-only method
+weaker than a source read, because the two apps solve different domains
+(gRPC load-balancer endpoints vs. an MCP GraphQL gateway's journal/metrics)
+under names that only partially match by file — the *architecture* match is
+what's real:
+
+- Both use a hand-rolled =InheritedNotifier=-based state container
+  (=InheritedAppState=/=InheritedLbClient= in lb; =InheritedAppState= in ghk)
+  instead of Riverpod/Provider — matching the task brief's characterization
+  ("no state mgmt" / "raw InheritedWidget").
+- =app_state.dart='s doc comment is close to verbatim in both: lb reads
+  /"held in a plain ChangeNotifier, matching desktop_kit's example (no
+  external state-management dependency). Persisted as one flat map via
+  SettingsStore."/ — ghk's =app_state.dart= repeats the *identical clause*,
+  word for word: /"held in a plain ChangeNotifier, matching desktop_kit's
+  example (no external state-management dependency)."/ Both cite the kit's
+  =example/= as the pattern source, yet neither is a literal copy of
+  anything under =example/lib= (confirmed in §2 — no shared basename beyond
+  =main.dart=). The pattern was carried by convention/documentation, not by
+  file copy.
+- =logs_screen.dart='s docstrings are also near-verbatim: lb —
+  /"Streams live process log lines...into two switchable views: a date→hour
+  tree (Foldables with expand/collapse-all), and a flat table with
+  click-to-sort headers (asc/desc). Filtering composes:..."/ — ghk: /"Streams
+  ghk's journal...into two switchable views: a date→hour tree (Foldables
+  with expand/collapse-all), and a flat table with click-to-sort headers
+  (asc/desc). Filtering composes:..."/ Same design down to the parenthetical.
+- =categories.dart= in both builds a =List<SettingsCategory>= using the
+  kit's =SettingsCategory= type (=import 'package:desktop_kit/desktop_kit.dart'=
+  in both) — this part *is* legitimate use of a shared kit primitive, not
+  duplicated logic; the duplication is in the surrounding scaffold
+  (=inherited_app=, =app_state=, =shell=, =logs_screen=), not in
+  =categories= itself. Included in the table for completeness since it was a
+  named lead in the brief, but its "duplication" is thinner than the other
+  six files in this set.
+
+*Classification: ABSENT.* No kit equivalent exists for "InheritedNotifier
+AppState container + adaptive NavigationRail shell + foldable/sortable
+journal viewer" — two apps built it twice, independently, from a shared
+mental template (their own comments cite the same source: the kit's
+=example=), diverging most where the domain differs (ghk's =app_state= grew
+Prometheus/journal-specific fields; its =logs_screen= grew ghk-specific
+outcome-chip filtering) and staying nearly identical where it doesn't
+(=inherited_app=, the shell scaffold, the docstrings). *This is a
+templating problem, not a copy-paste problem* — the remedy is a genuine
+kit-level "headless app shell" (an =InheritedAppState=-style container +
+adaptive rail host + a generic foldable/sortable log-list widget), designed
+from the union of these two apps rather than from either alone, since
+neither is a strict subset of the other.
+
+** 3.3 Other app-vs-app pairs — smaller, but not nothing
+
+| Pair | File | Sizes | Sorted diff | Cause |
+|------+------+-------+-------------+-------|
+| nh vs gd  | =overview_view.dart=  | nh 154 / gd 207 | 245 | ABSENT (3rd independent overview view; gd uses =Provider=, path =src/ui/windows/=, not =features/=) |
+| nh vs gd  | =settings_view.dart=  | nh 309 / gd 433 | 590 | already sized in census §4; classification added here: ABSENT |
+| gu vs gd  | =overview_view.dart=  | gu 129 / gd 207 | 272 | ABSENT — same 3-way spread as above |
+| gu vs gd  | =settings_view.dart=  | gu 161 / gd 433 | 496 | ABSENT |
+| gu vs lb  | =connection_banner.dart= | gu 91 / lb 49 | 114 | ABSENT — see §4.2, same cluster as the banner findings |
+
+=gd='s =overview_view.dart= and =settings_view.dart= live at
+=src/ui/windows/=, using the =provider= package, not =features/.../
+presentation/= with Riverpod — a *third* independent architecture for the
+same two screen concepts, not a variant of either nh's or gu's. Three apps,
+three implementations, zero sharing, no kit equivalent for either screen
+shape. (=settings_view.dart='s three sizes — nh 309, gd 433, gu 161 — were
+already tabulated in [[file:duplication-census.org::*Settings persistence and presentation]];
+this section's contribution is the pairwise diff measure and the ABSENT
+classification, not the sizes themselves.)
+
+* 4. Same-purpose, different name — what filename matching cannot see
+
+The brief's seed case (=status_chip.dart= vs =status_badge.dart=) confirmed,
+plus three more clusters found by deliberately grepping for the recurring
+shapes rather than trusting basenames.
+
+** 4.1 The badge/chip/pill cluster — 4 files, 3 apps, 0 kit equivalent
+
+| File | App | Lines | Shape |
+|------+-----+-------+-------|
+| =status_chip.dart=   | netroute_manager            | 39 | rounded chip, icon+text, tinted via =DeskPalette= |
+| =status_badge.dart=  | mail-sweep           | 35 | rounded chip, text only, tinted via =DeskPalette= |
+| =type_badge.dart=    | alert-log  | 29 | rounded chip, text only, tinted via =NotifPalette= (IS-A =DeskPalette=) |
+| =category_badge.dart= | alert-log | 29 | same shape, different data source (internal to nh) |
+
+Read all four in full. =status_chip= and =status_badge= are close enough to
+be templates of each other: both a =StatelessWidget= taking a status value,
+both resolve a =Color= from =DeskPalette.of(context)= via a switch over
+semantic buckets (ok/warn/danger/muted-equivalent), both render a
+=Container= with =BoxDecoration= (rounded border, alpha-tinted fill) wrapping
+an =Icon=+=Text= or bare =Text=. nh's =type_badge.dart= is the same
+construction one level up the family tree (=NotifPalette= rather than
+=DeskPalette= directly, since nh's palette subclasses it). *Total: 132
+lines, 4 files, 3 apps, reinventing a widget the kit doesn't have.* This is
+the cleanest confirmation that the textloom blind-spot generalizes: no amount
+of "does this app import desktop_kit?" would surface this, because all four
+files *do* import the kit (for the palette) — they just don't import a
+shared badge/chip widget, because none exists to import.
+
+A related, weaker echo: =gd='s =service_status_card.dart= (94 lines) and
+=lb='s =health_palette.dart= (33 lines, a pure color/label mapping function,
+not a widget) both independently re-implement the "map a status enum/string
+to a semantic color" switch statement that also appears inline inside
+=status_badge.dart=. Four independent instances of the same 10–15-line
+idiom. Not consolidated into this section's line totals (the widgets around
+it differ enough — card vs chip vs bare function — to keep as a separate,
+lower-confidence observation), but worth a kit-level =statusColor(String|Enum)=
+helper if the badge/chip work above happens anyway.
+
+** 4.2 The banner cluster — 5 files, 3 apps, 0 kit equivalent, two sub-shapes
+
+| File | App | Lines | Sub-shape |
+|------+-----+-------+-----------|
+| =connection_banner.dart= | mail-sweep | 91  | hand-rolled =Material=+=Row=, Riverpod =AsyncValue.when= |
+| =connection_banner.dart= | netroute_manager  | 49  | hand-rolled =Material=+=Row=, gRPC connection-state switch |
+| =scan_banner.dart=       | mail-sweep | 169 | hand-rolled, Riverpod, progress/cancel/result states |
+| =restart_banner.dart=    | mountbridge    | 29  | stock Flutter =MaterialBanner=, =provider= package |
+| =update_banner.dart=     | mountbridge    | 38  | stock Flutter =MaterialBanner=, =provider= package, dismissible |
+
+=connection_banner.dart= is already the direct basename match (§3.3);
+=scan_banner=, =restart_banner=, =update_banner= are the same-purpose/
+different-name half. All five solve "a slim, dismissible strip communicating
+a transient app-lifecycle condition, invisible when nothing is wrong" — read
+in full to confirm, not inferred from names. Two genuinely different
+implementation strategies split the cluster (hand-rolled =Material=+=Row=
+in gu/lb vs. stock =MaterialBanner= in gd), so a single shared widget would
+need to accommodate both, or the kit would need to bless one strategy — but
+*five independent implementations of the same UX pattern, zero sharing, no
+kit equivalent at all* (the kit's =status/led_indicator.dart= is a different
+shape — an LED dot, not a banner) is itself the finding regardless of which
+remedy is chosen. 376 lines total.
+
+** 4.3 A softer note: nav-rail assembly is extracted once, inlined four times
+
+=nh= factors =NavigationRail= construction into its own =nav_rail.dart= (152
+lines). =mail-sweep=, =mountbridge=, =netroute_manager=, and =ghk_dashboard= all use
+=NavigationRail= too (confirmed via =grep NavigationRail=), but each inlines
+the destination-list-building logic directly inside its own
+=app_shell.dart=/=dashboard.dart=/=shell.dart=. This is not textual
+duplication in the sense of the other findings — there is no second
+=nav_rail.dart= to diff against — but it is the same architectural
+inconsistency as the app-shell finding at smaller scale: one app treats
+"build the set of rail destinations" as an extractable concern, four
+inline it. Recorded for completeness; too diffuse to size meaningfully
+without inventing a boundary the apps themselves didn't draw.
+
+** 4.4 The sortable-table shape — confirmed independently reinvented at least 4 times
+
+The brief named =paginated_sortable_table.dart= as a recurring shape to
+check for under different names. Found:
+
+| Where | Lines | Shape |
+|-------+-------+-------|
+| alert-log =widgets/paginated_sortable_table.dart= | 981 | dedicated, reusable-within-app widget: pagination + click-to-sort columns |
+| netroute_manager =screens/logs_screen.dart= (embedded) | (within 493) | inline click-to-sort table, own docstring: "a flat table with click-to-sort headers (asc/desc)" |
+| ghk_dashboard =screens/logs_screen.dart= (embedded) | (within 1,074) | inline click-to-sort table, same docstring clause |
+| mountbridge =windows/cache_view.dart= | 157 | inline =DataTable= with hand-rolled =_sortColumnIndex=/=_sortAscending= state |
+
+Kit has no table/=DataTable= file at all (confirmed against the full kit
+file listing in §0). Four apps, four independent implementations, ranging
+157–981 lines depending on how much the app invested in it. nh went furthest
+(a genuinely reusable, generic widget); lb/ghk built the sort logic directly
+into their log viewers (part of the already-counted §3.2 total, not double
+counted here); gd's is the smallest, most ad hoc version. This is additional
+support for the same §3.2 recommendation (a shared "sortable/foldable log or
+data list" primitive) rather than a new, separately-sized line item.
+
+** 4.5 Ruled out — checked and NOT a match
+
+- =categorical_palette.dart= (ghk, 101 lines, chart-series color assignment —
+  "color follows the entity, never its rank," per the dataviz skill) vs.
+  =health_palette.dart= (lb, 33 lines, semantic status→color mapping). Read
+  both in full: genuinely different purposes (categorical hue-cycling for N
+  independent chart series vs. a fixed 4-way health-status switch). Not a
+  finding.
+- =app_theme.dart= (nh only) — no equivalent construction elsewhere. Checked
+  whether gu/gd/lb/ghk build their own =ThemeData= (grepped for
+  =ThemeData(= across all five): *zero hits in any of the five apps.* All
+  five wire =MaterialApp.theme= through a kit-provided builder
+  (=buildAppearanceTheme=, =.lightTheme()=, or an app-level equivalent that
+  itself forwards to the kit) — this is the *adopted* path working as
+  intended, not a fork. No finding.
+
+* 5. Aggregate — how much new duplication this extension found
+
+Counting each file once (not once per pairwise comparison it appears in),
+and excluding files already ruled out as false leads or as resolved/adopted:
+
+| Cluster | Files | Apps involved | Lines | Cause |
+|---------+-------+----------------+-------+-------|
+| netroute_manager / ghk_dashboard app scaffold (§3.2) | 7 | 2 | 996 + 1,916 = 2,912 | ABSENT |
+| alert-log / mail-sweep Riverpod scaffold (§3.1) | 8 | 2 | 839 + 519 = 1,358 | ABSENT |
+| mountbridge =version_info.dart= vs kit (§1) | 1 | 1 (+ kit) | 27 | STALE |
+| Badge/chip/pill cluster (§4.1) | 4 | 3 | 132 | ABSENT |
+| Banner cluster (§4.2) | 5 | 3 | 376 | ABSENT |
+| Sortable-table shape (§4.4, gd's slice only — nh/lb/ghk already counted above) | 1 | 1 | 157 | ABSENT |
+| Three-way overview/settings spread (§3.3, gd's contribution beyond what §3.1/3.2 already count) | 2 | 1 (+2 already counted) | 207 + 433 = 640 | ABSENT |
+| *Total new lines identified* | *28 files* | *5 apps* | *~5,600* | mostly ABSENT |
+
+Of the five existing apps this extension covers, *every one* contributed at
+least one new, previously-uncatalogued duplicate — the largest single
+contribution is the =netroute_manager=/=ghk_dashboard= architectural-twin finding
+(§3.2), which the existing census's per-app size tables could not have
+surfaced even in principle, since it requires reading two apps against each
+other rather than either against the kit.
+
+*What did NOT recur:* an textloom-style fork of =ui-kit-private/example=.
+Checked with the identical method that found textloom (§2); all five apps came
+back clean. This bounds the blind spot: it was real and worth checking, but
+it does not mean every unchecked app is hiding an textloom.
+
+* 6. notekeep — cheap inventory only, per instruction
+
+Not deeply analysed (decommissioning in progress); basename overlap only.
+
+| vs | Shared basenames |
+|----+-------------------|
+| kit | =display_config.dart=, =host_ui_font.dart=, =org_outline.dart=, =org_table.dart=, =primary_selection.dart= |
+| example | =main.dart= only |
+| nh | =host_ui_font.dart=, =main.dart= |
+| gu | =main.dart= |
+| gd | =main.dart= |
+| lb | =main.dart=, =settings_screen.dart= |
+| ghk | =about_screen.dart=, =main.dart=, =settings_screen.dart= |
+
+The kit overlap (org-editing primitives: =org_outline=, =org_table=,
+=primary_selection=, plus =display_config=/=host_ui_font=) is exactly what's
+expected of an org-mode app consuming =org_edit=/=theme= — consistent with
+the existing census's note that notekeep already imports the kit's settings
+barrel (2 files). No source reads performed; not classified; not included in
+the §5 aggregate. Given the decommission, this is recorded for completeness
+only and needs no follow-up.
+
+* 7. Recommendation — where this fits in the tranche order
+
+1. *=mountbridge= =version_info.dart= (STALE, §1)* is the cheapest, lowest-risk
+   item in this entire extension — 27 lines, a strict subset, a two-call-site
+   edit (=.fromDbusMap= → =.fromMap=, adjust the empty-vs-\'unknown\' display
+   fallback). Bundle it with whatever tranche is already touching mountbridge;
+   it doesn't need its own tranche.
+
+2. *The badge/chip/pill cluster (§4.1) and the banner cluster (§4.2)* are
+   the next-cheapest wins with the best payoff-to-risk ratio: small absolute
+   size (132 + 376 = 508 lines), three apps each, and a clean "design one
+   shared widget from the union, thin call sites everywhere" remedy — the
+   textbook ABSENT case. Recommend a single small tranche, "kit: promote
+   PaletteBadge + StatusBanner," ahead of the larger architectural work,
+   both because it is self-contained and because it demonstrates the
+   filename-blind method's payoff concretely (worth doing before the bigger,
+   harder tranche below so the team sees a fast win from the extended
+   method).
+
+3. *The =netroute_manager=/=ghk_dashboard= scaffold (§3.2) and the
+   =alert-log=/=mail-sweep= scaffold (§3.1)* are the two large,
+   hard items this extension surfaced, and they are harder than a typical
+   STALE/AHEAD tranche because neither is a strict subset of the other —
+   both require designing a shared primitive from the union of two live,
+   diverged implementations (per the ABSENT remedy), not a mechanical
+   delete. Recommend these as their *own* tranche(s), scheduled *after* the
+   existing [[file:framework-subsumption-design.org]] tranches that are pure
+   STALE/AHEAD deletes (mechanically cheaper, should land first per the
+   copy-first invariant), but *before* any tranche that would touch
+   =netroute_manager= or =ghk_dashboard='s app-shell code for unrelated reasons —
+   touching that code twice (once for an unrelated fix, once for this
+   consolidation) is exactly the kind of avoidable double-cost the existing
+   census's "promotion without adoption" lesson warns about. Two apps, two
+   different state-management idioms in play across the family (Riverpod
+   for nh/gu, raw =InheritedNotifier= for lb/ghk) — the union design should
+   decide *once* whether the kit-level primitive is state-management
+   agnostic (like =SettingsStore= already is) rather than picking a side.
+
+4. *The sortable-table shape (§4.4)* rides along with whichever of (2) or
+   (3) lands first that touches nh, lb, or ghk — it is not large enough on
+   its own to justify a fourth tranche, and gd's 157-line slice is small
+   enough to fold into whichever tranche touches gd for the =version_info=
+   fix.
+
+* Source Verification Notes
+
+** Verified (measured directly, this session)
+- All file/line counts: read via =wc -l= against the excluded-set path
+  lists built in §0; every count in every table above was independently
+  re-derived from those lists, not carried from the brief.
+- All "differs"/identity results: =diff -q= run for every shared-basename
+  pair; zero byte-identical pairs found across any of the three cross-checks
+  in this extension (contrast with textloom's 16 identical files, already on
+  record).
+- All "sorted diff" numbers: =diff <(sort A) <(sort B) | grep -c '^[<>]'=,
+  run for every pair in every table.
+- Every classification (STALE / ABSENT / false-lead / already-adopted) is
+  based on reading the actual file contents, not inferred from line counts
+  or names alone — every file discussed in §1, §3.2, §4.1, §4.2, and §4.5
+  was opened and read (in full, for the shorter files; head-and-body
+  sampling for =logs_screen.dart= given their length, sufficient to confirm
+  or refute shared authorship via docstrings and class/import structure).
+- =NavigationRail=, =ThemeData(=, =PaginatedDataTable=/=DataTable=,
+  =Generated code= greps: run against the excluded-set path lists per app,
+  confirmed by opening every file the grep returned.
+- Dart-file counts per app (60/32/26/22/36) matched exactly against the
+  brief before any exclusion was applied; the generated-file counts
+  subtracted (10 for nh, 0 for the other four, plus netroute_manager's 4
+  non-freezed/g generated protobuf files caught by manual header check) are
+  all directly observed, not estimated.
+
+** Judged (this session's interpretation, not a bare measurement)
+- "Same purpose" calls in §4 (badge/chip/pill cluster, banner cluster,
+  status-color-mapping echo) are a judgment based on reading class
+  structure, constructor signatures, and behavior — not a formal
+  equivalence proof. Flagged where confidence is lower (§4.1's
+  =service_status_card=/=health_palette= echo, explicitly marked "weaker,"
+  and §4.3's nav-rail note, explicitly marked "too diffuse to size").
+- The claim that netroute_manager and ghk_dashboard share a common architectural
+  *template* (as opposed to one simply resembling the other by
+  coincidence) rests on the near-verbatim docstring matches quoted in §3.2
+  — this is strong textual evidence of common authorship/convention, not
+  a git-history claim (no git log was read; this task is read-only and the
+  brief prohibits any write operation including inspecting history beyond
+  what's on disk). Stated as "shared ancestry apparent from the source,"
+  not asserted as a verified commit lineage.
+- Tranche-order recommendation (§7) is judgment applying the existing
+  census's own stated principles (copy-first invariant, STALE-before-ABSENT
+  sequencing, "don't touch the same code twice" from the task-board lesson)
+  to the new findings — not a new principle.
+
+** Exclusion set (stated once, applies to every count in this document)
+=vendor/=, =.worktree/=, =dist/=, =*.freezed.dart=, =*.g.dart=, plus
+=netroute_manager='s 4 generated protobuf files under
+=lib/src/generated/lbmanager/v1/= (identified by their "Generated code. Do
+not modify." header, not by filename pattern — no other app in this
+extension had non-pattern-matched generated files, confirmed by grepping all
+five apps' path lists for "Generated code").
+
+* Performance
+Not applicable — this task is a static duplication census (file/line
+measurement and source reading); no code was executed, built, or profiled.
+
+* Glossary
+- kit :: =ui-kit-private=, the shared widget/theme/keymap library at
+  =lib/src=.
+- example :: =ui-kit-private/example=, the kit's own demo gallery app
+  (51 lib files, 12 pages) — previously found to be textloom's un-acknowledged
+  ancestor.
+- nh, gu, gd, lb, ghk :: this document's shorthand for
+  alert-log, mail-sweep, mountbridge, netroute_manager, ghk_dashboard
+  respectively (matches no external convention; local to this file).
+- ABSENT / STALE / AHEAD / ORPHAN :: the four duplication-cause classes
+  defined in [[file:duplication-census.org::*How to read this document]];
+  not re-derived here, only applied.
+- sorted diff :: =diff <(sort A) <(sort B) | grep -c '^[<>]'=, the
+  order-insensitive set-difference measure used throughout this document.
+
+* Index
+- vs-kit findings → [[*1. vs-kit cross-check]]
+- vs-example findings (the textloom-style check) → [[*2. vs-example cross-check — the check that found textloom]]
+- netroute_manager/ghk_dashboard scaffold finding → [[*3.2 =netroute_manager= vs =ghk_dashboard= — the biggest new finding: a shared raw-InheritedWidget scaffold]]
+- nh/gu Riverpod scaffold finding → [[*3.1 =alert-log= vs =mail-sweep= — a shared Riverpod app skeleton]]
+- badge/chip/pill cluster (filename-blind) → [[*4.1 The badge/chip/pill cluster — 4 files, 3 apps, 0 kit equivalent]]
+- banner cluster (filename-blind) → [[*4.2 The banner cluster — 5 files, 3 apps, 0 kit equivalent, two sub-shapes]]
+- sortable-table shape → [[*4.4 The sortable-table shape — confirmed independently reinvented at least 4 times]]
+- aggregate new-duplication total → [[*5. Aggregate — how much new duplication this extension found]]
+- tranche-order recommendation → [[*7. Recommendation — where this fits in the tranche order]]
+
+* Cross-References
+- Base document (taxonomy, textloom finding, task-board ORPHAN lesson):
+  [[file:duplication-census.org]]
+- Tranche sequencing this extension's recommendation slots into:
+  [[file:framework-subsumption-design.org]]
+- App inventory (file/import/state-mgmt counts this task's brief was built
+  from): [[file:flutter-app-inventory.org]]
+
+* Footnotes
+[fn:1] All five apps and notekeep live under
+=$HOME/go/src/github.com/davidwalter0/= as sibling repos to
+=ui-kit-private= and =frameworks=; paths given in full in each section
+rather than abbreviated, per the read-only/verifiability requirement of this
+task.

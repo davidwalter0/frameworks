@@ -1,0 +1,50 @@
+{
+ "cross-bridge": {
+  "128": {"corner":"#000000/a0","centre":"#161f31/a255","colors":1810,"ink":17.3},
+  "256": {"corner":"#000000/a0","centre":"#162032/a255","colors":3186,"ink":14.8},
+  "32": {"corner":"#000000/a0","centre":"#30b4ac/a255","colors":496,"ink":38.9},
+  "48": {"corner":"#000000/a0","centre":"#23807f/a255","colors":774,"ink":29.6},
+  "512": {"corner":"#000000/a0","centre":"#162032/a255","colors":5111,"ink":13.3},
+  "64": {"corner":"#000000/a0","centre":"#19464f/a255","colors":976,"ink":25.1}
+ },
+ "ghk": {
+  "128": {"corner":"#000000/a0","centre":"#161f32/a255","colors":1694,"ink":11.9},
+  "256": {"corner":"#000000/a0","centre":"#162032/a255","colors":3401,"ink":9.9},
+  "32": {"corner":"#000000/a0","centre":"#13182b/a255","colors":367,"ink":24.7},
+  "48": {"corner":"#000000/a0","centre":"#161f32/a255","colors":582,"ink":21.3},
+  "512": {"corner":"#000000/a0","centre":"#162032/a255","colors":5556,"ink":9.0},
+  "64": {"corner":"#000000/a0","centre":"#161f32/a255","colors":813,"ink":16.1}
+ },
+ "mountbridge": {
+  "128": {"corner":"#000000/a0","centre":"#3dccc6/a255","colors":1803,"ink":30.0},
+  "256": {"corner":"#000000/a0","centre":"#43cccb/a255","colors":3349,"ink":29.5},
+  "32": {"corner":"#000000/a0","centre":"#349da0/a255","colors":400,"ink":34.6},
+  "48": {"corner":"#000000/a0","centre":"#34a6a6/a255","colors":659,"ink":32.9},
+  "512": {"corner":"#000000/a0","centre":"#45cbcc/a255","colors":5222,"ink":29.1},
+  "64": {"corner":"#000000/a0","centre":"#34afad/a255","colors":934,"ink":31.6}
+ },
+ "netroute-manager": {
+  "128": {"corner":"#000000/a0","centre":"#68abcf/a255","colors":1573,"ink":13.7},
+  "256": {"corner":"#000000/a0","centre":"#69abce/a255","colors":2912,"ink":12.4},
+  "32": {"corner":"#000000/a0","centre":"#65aed1/a255","colors":378,"ink":24.7},
+  "48": {"corner":"#000000/a0","centre":"#63a8cb/a255","colors":613,"ink":21.9},
+  "512": {"corner":"#000000/a0","centre":"#6aabce/a255","colors":4682,"ink":11.7},
+  "64": {"corner":"#000000/a0","centre":"#66aace/a255","colors":836,"ink":18.0}
+ },
+ "voicelab": {
+  "128": {"corner":"#000000/a0","centre":"#161f32/a255","colors":1943,"ink":22.9},
+  "256": {"corner":"#000000/a0","centre":"#162032/a255","colors":3238,"ink":20.6},
+  "32": {"corner":"#000000/a0","centre":"#151b2f/a255","colors":430,"ink":32.7},
+  "48": {"corner":"#000000/a0","centre":"#161f32/a255","colors":742,"ink":31.5},
+  "512": {"corner":"#000000/a0","centre":"#162032/a255","colors":5120,"ink":20.0},
+  "64": {"corner":"#000000/a0","centre":"#161f32/a255","colors":1030,"ink":27.2}
+ },
+ "word-bank": {
+  "128": {"corner":"#000000/a0","centre":"#30dbc7/a255","colors":2366,"ink":41.7},
+  "256": {"corner":"#000000/a0","centre":"#30d6c4/a255","colors":4266,"ink":40.9},
+  "32": {"corner":"#000000/a0","centre":"#2ba8a0/a255","colors":482,"ink":47.8},
+  "48": {"corner":"#000000/a0","centre":"#2dd7c1/a255","colors":797,"ink":44.5},
+  "512": {"corner":"#000000/a0","centre":"#30d4c2/a255","colors":6595,"ink":40.6},
+  "64": {"corner":"#000000/a0","centre":"#2edfc8/a255","colors":1164,"ink":42.9}
+ }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "textloom",
+  "palette": {
+    "tileTop": "#1e293b",
+    "tileBottom": "#0f172a",
+    "border": "#334155",
+    "heroStops": [
+      { "color": "#bae6fd" },
+      { "color": "#7dd3fc" },
+      { "color": "#2dd4bf" }
+    ]
+  },
+  "motif": {
+    "color": "#0e7490",
+    "opacity": 0.30,
+    "svg": "<line x1=\"46\" y1=\"50\" x2=\"46\" y2=\"188\" stroke-width=\"4\" stroke-linecap=\"round\"/><g stroke-width=\"4\" stroke-linecap=\"round\"><path d=\"M46 84 h16\"/><path d=\"M46 118 h16\"/><path d=\"M46 152 h16\"/></g><path d=\"M34 44 l12 0 l-6 10 z\" stroke=\"none\"/><circle cx=\"72\" cy=\"50\" r=\"6.5\" stroke=\"none\"/><rect x=\"86\" y=\"45\" width=\"76\" height=\"9\" rx=\"4.5\" stroke=\"none\"/><path d=\"M64 80 l0 12 l10 -6 z\" stroke=\"none\"/><circle cx=\"88\" cy=\"84\" r=\"5.5\" stroke=\"none\"/><rect x=\"100\" y=\"79.5\" width=\"60\" height=\"8\" rx=\"4\" stroke=\"none\"/><circle cx=\"88\" cy=\"118\" r=\"5.5\" stroke=\"none\"/><rect x=\"100\" y=\"113.5\" width=\"54\" height=\"8\" rx=\"4\" stroke=\"none\"/><path d=\"M64 148 l0 12 l10 -6 z\" stroke=\"none\"/><circle cx=\"88\" cy=\"152\" r=\"5.5\" stroke=\"none\"/><rect x=\"100\" y=\"147.5\" width=\"46\" height=\"8\" rx=\"4\" stroke=\"none\"/>"
+  },
+  "layers": [
+    {
+      "font": "/usr/share/fonts/truetype/gentiumplus/GentiumPlus-BoldItalic.ttf",
+      "text": "tl",
+      "height": 150,
+      "centerX": 128,
+      "y": 53,
+      "align": "top",
+      "fill": "hero"
+    }
+  ]
+}

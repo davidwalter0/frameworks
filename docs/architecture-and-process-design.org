@@ -1,0 +1,416 @@
+:PROPERTIES:
+:ID:       frameworks-architecture-and-process-design
+:END:
+#+title: Architecture and process design — DRY, interface decoupling, flows
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Analysis complete. This is the *how* layer under the consolidation docs: what DRY
+actually means for this family, which interface conventions already work and
+should be mandated, and the process/flow gap that makes every gate in the
+migration design currently unenforced.
+
+** Completed
+- [X] DRY reframed around duplicated *decisions*, not duplicated text — with the
+  counter-cases where merging is wrong
+- [X] The seam convention extracted from 4 working instances and generalised
+- [X] Process/flow audit: CI coverage, cross-repo pin flow, gate enforcement
+- [X] The one finding that undermines the migration design, and its fix
+
+** Next Steps
+- [ ] File the CI gap as work (kit has none; 1 of 12 repos has any)
+- [ ] Complete =voicelab/.github/workflows/release.yml= action pinning
+- [ ] Repair and relocate =consumers.yaml=
+
+* 1. DRY — the census counts text; DRY is about decisions
+
+[[file:../ui/docs/duplication-census.org]] measures *textual* duplication because
+that is what is cheaply measurable. But "duplicated lines" and "DRY violation"
+are different quantities, and conflating them produces two opposite errors.
+
+A DRY violation is *one decision expressed in more than one place*, such that
+changing the decision requires finding every expression. Text is a proxy for
+that, and a lossy one in both directions.
+
+** Direction 1 — identical text that is NOT a DRY violation
+
+Two files can be byte-identical by *coincidence*: each is the obvious minimal
+implementation of a small idea, and neither depends on the other. Merging them
+creates a coupling that did not exist, and the cost lands later — when one
+consumer needs a change the other must not have.
+
+The test is not "are these the same?" but *"if this decision changes, must both
+change?"*
+
+** CORRECTION (2026-07-29) — the hazard is real, but this family has no instance of it
+
+An earlier revision of this section illustrated coincidental identity with
+=keymap_setup.dart= and =emacs_syntax_samples.dart=, arguing they were
+byte-identical *by accident* and that merging them would manufacture a coupling.
+A file-by-file adjudication of all 18 identical pairs refuted that:
+
+*Not one of the 18 pairs is coincidental. Every one has a documented copy
+direction and date.*
+
+- *Set A* (kit ↔ voicelab) traces to kit commit =c3932e4= (2026-07-02),
+  "feat(kana): promote romaji/kana engine + mark/text-motions *from voicelab*".
+  The kit's copy IS voicelab's file, already exported from =desktop_kit_keymap.dart=,
+  which voicelab already imports in seven places.
+- *Set B* (example ↔ textloom) traces to textloom's root commit =bd6fd4f=
+  (2026-07-19), "fork the example gallery into a standalone lightweight editor".
+  16 files identical and 18 diverged in ten days.
+
+So the "merging manufactures a coupling that did not exist" hazard —
+which is a real hazard in general — *has no instance in this codebase*. Saying
+so is more useful than keeping two illustrations that turn out to be the
+opposite case. The decision test still governs; what it selects for here is not
+"coincidence vs. lineage" but *ownership* and *what the kit already has*.
+
+Two specific corrections, because I had them wrong in different ways:
+
+| File | My verdict | Correct verdict | What I missed |
+|------+------------+-----------------+---------------|
+| =emacs_syntax_samples.dart= (83) | leave — "demo fixture" | *MERGE, tier 1* | it is a =Map<SyntaxLanguage, String>= keyed on the *kit's own enum*, so adding a language silently blanks every un-updated copy's preview. The drift already happened — =editor_settings_pane.dart= carries the comment "go / org / yaml were unreachable while this pane offered a locally-invented enum." |
+| =keymap_setup.dart= (33) | leave — "each app's own binding choices" | *leave — right answer, wrong reason* | it contains *no* binding choices at all; Shift-K and the intent live in =desktop_kit_kana_keymap.dart=. It is three one-line compositions. The real reason to leave it is that merging would turn a deliberately *opt-in* IME module *on by default*. |
+
+The second row is the more instructive failure: a correct verdict resting on a
+false premise is not a correct judgement, it is a coincidence, and it would have
+generalised wrongly to the next file.
+
+** What the adjudication actually found
+
+Verdicts: *12 MERGE (all tier 1, 1,955 lines) / 6 LEAVE (1,077 lines)*. Nothing
+is a tier-2 candidate — no file in the set imports Riverpod. Crucially, *no
+LEAVE means "keep two live copies"*: every one is either single-owner or
+retire-against-what-the-kit-already-has.
+
+Three findings worth carrying beyond this tranche:
+
+1. *Set A is the ORPHAN pattern at file granularity — a third instance.* When
+   =mark_state= and =text_motions= were promoted out of voicelab, a sibling from
+   the same promotion (=editor_intents.dart=) *was* converted to a re-export
+   shim in voicelab — it is 78 lines of =export= today. These two were not.
+   (=keymaps.dart= is also still a full 183-line implementation, so the shim
+   conversion was applied to exactly one of the promoted files, not two.)
+2. *Merging can INCREASE surface if the kit already has the capability.*
+   =org_fold_model.dart= would install a second =parseOrgOutline= — the kit
+   already has =List<OrgNode> parseOrgOutline(String)= at
+   =org_edit/org_outline.dart:57=, the same function name. =emacs_help.dart=
+   would make a *third* describe-bindings surface beside the kit's existing
+   =keymap/keymap_help.dart= (192 lines). That is the =about_dialog= failure
+   reproduced *inside its own fix*. Both are LEAVE-and-retire, not merge.
+3. *The merge unit can be smaller than the file.* =org_header_theme.dart= merges
+   its palettes, bullets, box and extractor but must carve out
+   =kDavidOrgHeaderConfig= — one person's =custom-set-faces=, which the kit
+   should not own.
+
+*So the byte-identical bucket is not automatically a tranche* — the original
+point stands, for sharper reasons than the ones I first gave. Tranche 3b
+partitions by the adjudication in [[file:../ui/docs/identical-file-verdicts.org]].
+
+** Direction 2 — different text that IS one DRY violation
+
+The reverse error is more expensive, because textual measurement cannot see it at
+all. The family's largest DRY violations are decisions with many *dissimilar*
+expressions:
+
+| Decision | Expressions | Textual similarity |
+|----------+-------------+--------------------|
+| Where does a setting persist, and when is it written? | kit =SettingsStore= + word-bank's own =FileSettingsStore= + voicelab =settings_providers= + 6 more surfaces | low — no two look alike |
+| What does "dark mode" mean? | Flutter engine (portal) → =platformBrightness= → kit =_resolveBrightness= → 7 apps' own =ThemeMode= plumbing | near zero |
+| How is an app laid out at each width? | =AdaptiveLayout= (kit + task-board) + =resizable_split= (word-bank, voicelab) + =adaptive_panels= (word-bank) + 6 shells | low |
+| What is an installable Linux app? | 3 Go installers (now 1) + 3 =lib-appdir.sh= + =.desktop= templates | moderate |
+
+Grepping for identical text finds *none* of these. They surface only by asking
+"what decision is this?" — which is why the census's cause taxonomy
+(STALE/AHEAD/ORPHAN/ABSENT) sits above its line counts, and why the recurring-shape
+analysis in the inventory (§"five recurring shapes") is the more load-bearing
+half of that document.
+
+** The guard against over-DRYing
+
+The opposite failure — hoisting too eagerly — is already controlled by the
+*two-consumer admission rule* for tier 2
+([[file:../ui/docs/framework-subsumption-design.org]] §2), which is the user's
+standing position that a package with one consumer is that project's code.
+
+Two corollaries worth stating explicitly, because both were nearly violated this
+session:
+
+1. *=gatehub-kit/observe= has exactly one consumer.* It is a good package
+   (1,352 source lines, near-1:1 tests, importable, no =internal/=) and the
+   temptation to hoist it into =frameworks/go= is strong precisely *because* it is
+   good. The rule says leave it and import in place until a second consumer
+   exists. Recorded in [[file:../go/docs/go-framework-design.org]] §3.2.
+2. *Logging has no duplication at all* — =log/slog= appears in 2 of 11 repos. A
+   =frameworks/go/pkg/logging= would be an abstraction with no second consumer
+   and no drift to arrest. Deferred, and the deferral is *recorded* rather than
+   left implicit, so a later session does not read the absence as an oversight.
+
+* 2. Interface decoupling — the seam convention, already proven 4×
+
+The kit contains a consistent, well-designed platform-decoupling pattern that is
+*nowhere documented as a convention*. It is discovered by reading. Extracting and
+mandating it is the highest-value interface work available, because it costs
+nothing to adopt — it already exists and already works.
+
+** The shape
+
+Four instances, measured:
+
+| Seam | Interface | Selector | Implementations |
+|------+-----------+----------+-----------------|
+| =host_env= | =host_env.dart= 77 | =host_env_default.dart= 31 | =_io= 41, =_web= 41, =_stub= 33 |
+| =host_process= | =host_process.dart= 64 | =host_process_default.dart= 13 | =_io= 53, =_web= 24 |
+| =settings_backend= | =settings_backend.dart= 59 | =settings_backend_default.dart= 18 | =_io= 107, =_web= 51, =_stub= 20 |
+| =font_enumeration= | (in =font_tools.dart=) | =font_enumeration_default.dart= 12 | =_io= 52, =_web= 18 |
+
+Four files per seam, with one job each:
+
+#+begin_src text
+X.dart          the abstract interface. NO platform imports. Pure, testable.
+X_default.dart  the selector: a conditional `export` choosing a variant.
+X_io.dart       the dart:io implementation.
+X_web.dart      the browser implementation.
+X_stub.dart     the degraded implementation (present where a host may have neither).
+#+end_src
+
+Consumers import only =X_default.dart= and receive the correct variant. Measured
+consumers: =widgets/file_ref=, =clipboard/primary_selection=, =anthy/anthy_egg=,
+=theme/font_tools=, =theme/host_ui_font=, =settings/settings_store=.
+
+** The principle that makes it work, stated in the kit's own words
+
+From =host_env.dart=:
+
+#+begin_quote
+Implementations are trivial on =dart:io= hosts and near-empty on the web, which
+is the point: callers get a *total interface* and branch on the *values*, not on
+which platform they think they are.
+#+end_quote
+
+That is the whole decoupling idea, and it is stronger than the file layout:
+
+- *Total interface.* Every method exists on every host. =home= returns =String?=
+  rather than being absent on the web; =environment= returns an empty map rather
+  than throwing.
+- *Branch on capability, not identity.* =hasProcesses= is a =bool= on the
+  interface. A caller asks "can I spawn?" — never "am I on Linux?". Platform
+  identity (=HostOs os=) is available but is not the control-flow mechanism.
+
+The second point is what prevents the seam from leaking. A codebase that branches
+on =Platform.isLinux= has re-coupled itself to the platform at every call site,
+no matter how clean the seam beneath is.
+
+** Where it must be mandated
+
+1. *Tier 2 (=app_kit=).* It has no seams yet because it does not exist. Every
+   host-touching capability it grows — window state, tray/indicator, autostart,
+   =Inhibit= — takes this shape from the start. The alternative is discovering, as
+   the census did for the UI, that nine apps each hand-rolled the same probe.
+2. *Go.* The pattern already crossed languages without being named. In
+   =pkg/installer=: =Options.Out io.Writer= (output seam),
+   =SystemHicolorIndexTheme= as a package var so tests redirect it, and in
+   =go-version/pkg/tools/sign.go= the =cosignRunner= seam that makes signing
+   testable with no cosign binary. Same idea — an injected boundary with a total
+   interface — expressed idiomatically per language. State it once here rather
+   than rediscovering it per package.
+3. *The capability surface.* =host/capabilities.dart= (223 lines) is the existing
+   home for "what can this host do". A new probe belongs there, not as a fresh
+   ad-hoc check.
+
+** The interface smell to watch for during migration
+
+A tier-1 component that takes a =WidgetRef=, a =BuildContext= it only uses for a
+theme lookup, or a =Platform.isX= branch has failed the boundary. The
+=deps-guard= catches the first mechanically; the other two need review. The
+=task-board= promotion is the worked example of doing it right: =AdaptiveLayout=
+went from =ConsumerWidget= reading a Riverpod notifier to =required this.mode= +
+callbacks, and *that refactor is why it could live in the kit at all*.
+
+* 3. Process design and flows — where the design is currently unenforced
+
+This is the section with the finding that most threatens the migration.
+
+** The gates the design depends on
+
+[[file:../ui/docs/framework-subsumption-design.org]] rests on gates: =make check=
+green, "98 test files green *unmodified*", "verify against a real artifact", "the
+tranche is not done until the fork is deleted". Every one is stated as a
+requirement.
+
+** The measured reality: almost none of it is automated
+
+| Repo | CI workflows |
+|------+--------------|
+| *voicelab* | *3* — =check.yml=, =scan.yml=, =release.yml= |
+| ui-kit-private | *0* |
+| textloom, word-bank, gatehub-kit, alert-log, mountbridge, mail-sweep, netroute, task-board, notekeep, frameworks | 0 |
+
+*One repo of twelve has CI. The kit — the shared dependency ten apps consume —
+has none.* So "the gate" is a local =make check= invoked by whoever is at the
+keyboard, with nothing detecting a skip.
+
+Note the irony, consistent with everything else the census found: the family's
+only CI lives in =voicelab=, the app with the *lowest* kit adoption and the
+*most* forks. Process maturity and code sharing are uncorrelated here.
+
+** Why this is the load-bearing risk, not a nice-to-have
+
+The =task-board= ORPHAN is what an unenforced gate produces. A correct, documented,
+two-part plan (2026-07-04) had its promotion half executed and its adoption half
+silently dropped. Nothing detected the omission — the doc still says
+=[ ] Adoption worktree=, twenty-five days later, and the duplication it created
+was found only by this census.
+
+A migration of ~9 tranches across 12 repos, whose central invariant is "the
+tranche is not done until the fork is deleted", is *exactly* the shape that fails
+this way. The retire step is the step with no artifact: adding shared code
+produces a visible commit, deleting a fork produces nothing anyone is waiting
+for.
+
+** What good already looks like — copy it, do not invent it
+
+=voicelab/.github/workflows= is an exemplar and should be the template:
+
+- =check.yml= (76 lines) — SHA-pinned actions, runs =make vet lint vuln fmt-check
+  test cov=. Directly matches the check-suite contract.
+- =scan.yml= (137 lines) — two-job build/scan separation with
+  =step-security/harden-runner=, i.e. the secret-exfil-resistant pattern: the
+  build job holds credentials, the scan job receives only an artifact.
+- =release.yml= (136 lines) — *incomplete*: =actions/checkout@v4=,
+  =actions/setup-go@v5= and =subosito/flutter-action@v2= are still tag-pinned,
+  each carrying its own =# pin: replace with a full commit SHA= comment. A
+  mutable tag on a release workflow is a live supply-chain exposure and the file
+  documents its own gap.
+
+** The cross-repo pin flow, and its two defects
+
+=ui-kit-private/tools/pin-monitor/consumers.yaml= is the one piece of
+cross-repo process machinery. It lists the shared dep and each consumer's
+pubspec. Two defects:
+
+1. *Incomplete.* Six consumers listed; =ghk_dashboard=, =netroute_manager= and =textloom=
+   are absent. (=task-board= is correctly absent — it has no dependency.) So the
+   monitor under-reports by three, and =textloom= — pinned to a bare sha =5a610a6= —
+   is the one most likely to drift. Already tracked in kit todo =62419295=.
+2. *Host-local absolute paths, and a feature-branch pin.* Every path is
+   =$HOME/go/src/...=, so the file only works on one machine — it cannot
+   move into CI as written. And =mountbridge= is pinned to branch
+   =disk-backed-lru-persistence=, not =main=, which is either a stale entry or an
+   undocumented long-lived divergence.
+
+** The flow to put in place
+
+Ordered by value-per-effort, and deliberately minimal — the goal is to make the
+existing gates *observable*, not to build a platform:
+
+1. *=check.yml= on the kit and on =frameworks=, copied from =voicelab=.* Highest
+   value by a wide margin: it puts a gate on the shared dependency, which is the
+   one place a regression fans out to ten consumers. Now possible for
+   =frameworks= because the remote exists.
+2. *Finish the =release.yml= pinning* in =voicelab=. Small, and it closes a real
+   exposure the file already flags.
+3. *Make the retire step produce an artifact.* Each tranche's exit criterion
+   names specific files; a trivial script asserting those paths are *gone* turns
+   the invisible step into a check. This is the direct control for the ORPHAN
+   failure mode.
+4. *Relocate and repair =consumers.yaml=* — repo-relative paths, all consumers,
+   =main= or an explicit note on why not. It then works in CI.
+5. *A cross-repo smoke flow, last.* When tier 1 changes, build each consumer at
+   its pin. Genuinely useful, and genuinely the most work; do not let it block
+   items 1–4.
+
+** One process property worth preserving deliberately
+
+The copy-first contract makes rollback free *by construction* — abandoning a
+tranche means not doing step 4. That is a property of the *flow*, not of anyone's
+diligence, and it is the strongest thing in the current process design. Every
+change above should preserve it. In particular, do not "simplify" a tranche by
+deleting the fork in the same commit that adds the shared code: that trades the
+one structural guarantee for a slightly tidier history.
+
+* 4. Summary — the three asymmetries
+
+Each of these is a case where the intuitive reading is backwards, which is why
+they are collected here:
+
+1. *Textual duplication and DRY violation are different quantities.* Identical
+   text can be coincidence (leave it); dissimilar text can be one decision in
+   nine places (fix it). Ask "must both change together?", not "are these the
+   same?".
+2. *The best-decoupled code in the family is undocumented, and the
+   best-automated repo is the worst-shared one.* Both are discoverability
+   failures rather than capability failures — the same root cause as the kit's
+   =about_dialog= being reimplemented three times, and the reason =ui0= is an
+   oracle rather than a gallery.
+3. *The step with no artifact is the step that gets skipped.* Adding shared code
+   is visible; deleting a fork is not. The ORPHAN proves it empirically at n=1
+   with a 25-day detection lag. Gate the deletion, not the addition.
+
+* Source Verification Notes
+
+** Verified claims
+- Seam inventory (4 instances, file counts and line counts): ✓ =ls= + =wc -l= over
+  =lib/src/host/=, =lib/src/settings/=, =lib/src/theme/=, 2026-07-29.
+- Seam consumers: ✓ =grep -rn= for =*_default= imports, listing the six files.
+- The "total interface / branch on values" quotation: ✓ verbatim from
+  =lib/src/host/host_env.dart= lines 57–63; =HostEnv= surface read directly
+  (=environment=, =operator []=, =pathSeparator=, =os=, =hasProcesses=, =home=).
+- CI counts per repo: ✓ =ls .github/workflows/*.y*ml= across all 12 repos —
+  voicelab 3, every other repo 0.
+- =voicelab= workflow contents, including the three tag-pinned actions in
+  =release.yml= with their self-documenting =# pin: replace= comments: ✓ read
+  directly.
+- =consumers.yaml= contents — six consumers, absolute host paths, mountbridge on
+  branch =disk-backed-lru-persistence=: ✓ read directly.
+- =gatehub-kit/observe= size and importability; =log/slog= in 2 of 11 repos: ✓
+  measured, see [[file:../go/docs/go-framework-design.org]] §3.
+- The ORPHAN's 25-day detection lag: ✓ gap-evaluation doc dated 2026-07-04, kit
+  promotion commit =af177de= same day, adoption still open as of 2026-07-29.
+
+** Judgements, not measurements — flagged as such
+- The five-row "same decision?" table in §1 is *analysis*, not measurement. The
+  =keymap_setup= and =emacs_syntax_samples= verdicts ("leave forked") are my
+  reading of what those files encode; a reviewer who thinks the kit should own a
+  default keymap would reverse the first. That is the intended use of the table —
+  it makes the decision explicit and arguable rather than implicit in a tranche.
+- The flow ordering in §3 is a value-per-effort judgement.
+- "Process maturity and code sharing are uncorrelated here" is an observation on
+  n=12 with one positive case. It is a prompt to look, not a statistical claim.
+
+** Not verified
+- That =voicelab='s =check.yml= currently passes. It was read, not run.
+- Whether =mountbridge='s feature-branch pin is stale or deliberate — needs the
+  owner's answer, not a measurement.
+- Whether any of the proposed flow items would pass on the kit today; the kit has
+  no CI to observe, which is the finding.
+
+* Cross-References
+
+- App inventory and the two required tables:
+  [[file:../ui/docs/flutter-app-inventory.org]]
+- Measured forks and the cause taxonomy:
+  [[file:../ui/docs/duplication-census.org]]
+- Tiering, migration contract, tranches:
+  [[file:../ui/docs/framework-subsumption-design.org]]
+- Go module, installer, and the Go-side survey:
+  [[file:../go/docs/go-framework-design.org]]
+- Session trace: [[file:sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Governing rule (adopt a foundation module, never fork):
+  [[file:~/go/src/github.com/davidwalter0/ui-kit-private/docs/design/support-binary-module-kit.org]]
+- The ORPHAN's own plan:
+  [[file:~/go/src/github.com/davidwalter0/task-board/docs/desktop-kit-gap-evaluation.org]]
+- CI exemplar to copy: =~/go/src/github.com/davidwalter0/voicelab/.github/workflows/=
+
+* Footnotes
+
+[fn:decision] The "must both change together?" test is the operational form of
+DRY as originally stated — every piece of *knowledge* has a single authoritative
+representation. Knowledge, not text. The census measures text because text is
+measurable; this document exists because the two are not the same thing.

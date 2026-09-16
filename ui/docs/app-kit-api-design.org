@@ -1,0 +1,1417 @@
+:PROPERTIES:
+:ID:       frameworks-app-kit-api-design
+:END:
+#+title: app_kit API design — the tier-2 app-shell package
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Design complete. No Dart written — a sibling agent owns the kit copy, and an
+implementation now would collide with it. Every signature below is a proposal;
+every line count, class name, file:line and adoption count is measured against
+the working trees on 2026-07-29. The two are separated in Source Verification
+Notes.
+
+** Completed
+- [X] Per-shape API with tier, justifying consumers, and largest/smallest
+  migration sketch
+- [X] The exclusion list — what fails the two-consumer rule, with evidence
+- [X] Discoverability position, grounded in a measured adoption/cost correlation
+- [X] Three corrections to premises in the existing consolidation docs
+- [X] The anti-flatness property, stated as a mechanical guard
+- [X] Tiering disagreement: the axis is package granularity, not opinion level
+
+** Next Steps
+- [ ] Decide the packaging question (§8) *before* standing up =app_kit=; the
+  answer changes where every file below lands
+- [ ] File the tier-1 =AboutSection= attribution gap (§6) — it is not app_kit work
+- [ ] File the two verified defects found while measuring (§4.3, §9)
+
+* 0. The finding that reorganises the whole design
+
+Each of the five recurring shapes in
+[[file:flutter-app-inventory.org]] §"Reading the table — five recurring shapes"
+decomposes the same way:
+
+#+begin_src text
+shape  =  a state-agnostic widget          +  a provider / persistence tail
+          (value + onChanged, tier 1)         (holds it, persists it, hydrates it)
+#+end_src
+
+The kit shipped the *widget* for shapes 2, 3, 4 and 5. It shipped the *tail* for
+none of them — by design, because =make deps-guard= forbids it. Nine apps then
+wrote the tail. And where the tail was expensive, the same apps re-wrote the
+widget too, rather than pay the wiring for one they already had.
+
+The measured proof is =AdaptiveLayout=. Its tier-1 refactor
+(census §5) has **ten required constructor arguments**:
+
+#+begin_src dart
+const AdaptiveLayout({
+  super.key, required this.list, this.detail, required this.mode,
+  required this.listFraction, required this.detailFraction,
+  required this.overlayFraction, required this.onListFraction,
+  required this.onDetailFraction, required this.onOverlayFraction,
+  this.listClamp = const (0.2, 0.8), ... this.mobileBreakpoint = 600,
+});
+#+end_src
+
+Outside its origin (=task-board=) and the kit's own =example/=, **no app uses
+it**. =task-board='s fork has *zero* required arguments at the call site because
+it reads =ref.watch(localStorageProvider)= directly. Writing your own was
+literally less typing than adopting the shared one.
+
+So =app_kit= is *the tail, not the widget*. That single decision does three
+things at once:
+
+1. It keeps the API surface small — a tail is bounded by the widget it binds.
+2. It makes adoption cheaper than hand-rolling, which is the only mechanism that
+   has ever worked in this family (§7).
+3. It gives the anti-flatness guard something mechanical to check (§8.1): a leaf
+   widget does not need Riverpod, therefore a leaf widget cannot enter app_kit.
+
+Consequence for §2 of [[file:framework-subsumption-design.org]]: four of the five
+rows in its =app_kit provides= column are mis-tiered. The widgets it promotes
+(=AppScaffold=, =StatusAffordance=, the About re-export) are state-agnostic and
+belong in tier 1; only their tails are tier 2. Detailed in §9.
+
+* 1. The whole proposed surface, on one page
+
+| # | Export | Tier | Kind | Required args | Justifying app consumers (measured) |
+|---+--------+------+------+---------------+-------------------------------------|
+| 1 | =mixin AppKitSettings= + =appKitSettingsProvider= | 2 | interface + provider | — | 3 members, each justified separately (§3.1) |
+| 2 | =AppSettingsController<T>= + =AppSettingsCodec<T>= + =loadAppSettings<T>()= | 2 | notifier + codec + startup fn | 2 | voicelab, word-bank (own =abstract class SettingsStore=); + 4 apps' =main.dart= preamble |
+| 3 | =ChromeScaffold= | 2 | ConsumerWidget | 2 | voicelab, alert-log, mail-sweep, task-board, ghk_dashboard, netroute_manager, textloom |
+| 4 | =SettingsCategoriesPage= | 2 | ConsumerWidget | 1 | netroute_manager, ghk_dashboard (near-identical 48/53-line hosts) |
+| 5 | =AppearanceScope= | 2 | ConsumerWidget | 2 | alert-log, ghk_dashboard, mail-sweep |
+| 6 | =ServiceHealthController= + =ServiceHealthState= + =BackoffPolicy= | 2 | notifier + values | 2 | alert-log, task-board (two backoff impls); + ghk, mail-sweep, mountbridge status sources |
+
+Six exports. Plus these **tier-1 promotions**, which are *not* app_kit and must
+not be put there:
+
+| Promotion into tier 1 | From | Lines | Why tier 1 |
+|-----------------------|------|-------|------------|
+| =chrome/= — =ChromeAction=, =ChromeGap=, =ChromeButton=, =ChromeDestination=, =ChromeWidget=, =ChromeEntry=, =ChromeTier=, =chromeTierForExtent=, =ChromePlacement=, =NavPlacement=, =ActionStrip=, =chromeIconButtonStyle= | textloom (ancestor, 189) + voicelab (superset, 484) | 673 → ~360 | zero state dependency in *both* existing copies; pure =Key=/=IconData=/=String=/=VoidCallback=/=Widget Function= |
+| =status/HealthBanner=, =status/HealthChip= | mail-sweep + netroute_manager (2 each) | 214 → ~120 | value + onRetry |
+| =about/AboutSection.attribution= (or =LibraryAttribution=) | voicelab (1) — **file, do not build** | — | a tier-1 *parameter* gap, not a tier-2 concern (§6) |
+
+And the deliberate exclusions, which are as load-bearing as the inclusions: §5.
+
+* 2. Shape 1 — app shell / chrome
+
+** 2.1 What is actually duplicated
+
+Nine of eleven apps hand-roll a shell; 2,181 lines; 1392 (voicelab) to 53
+(alert-log). Reading all six, the *variation* is smaller than the
+spread suggests. Every one of them:
+
+1. holds a selected destination (=int=, an enum, or a route path);
+2. renders a destination list as a rail *or* a bottom bar, chosen by a
+   breakpoint and — in three apps — overridden by a user preference;
+3. hosts one body that must survive the switch;
+4. stacks zero or more status banners above the body;
+5. offers a drawer for whatever did not fit.
+
+The breakpoints all differ and none is shared:
+
+| App | Breakpoint | Where |
+|-----|-----------|-------|
+| textloom | =kWideBreakpoint = 700= | =lib/main.dart:59= |
+| ghk_dashboard | =kWideBreakpoint = 700= | =lib/src/shell.dart:25= |
+| word-bank | =kWideBreakpoint = 760=, =kHandheldBreakpoint = 1000= | =lib/app/responsive.dart:8,23= |
+| netroute_manager | =width >= 720= | =src/shell.dart:52= |
+| task-board | =600= / =1200= | =shell/app_shell.dart:35,52= |
+| voicelab | =600= / =840= (M3 size classes) | =app/window_size.dart= |
+| kit =AdaptiveLayout= | =mobileBreakpoint = 600= | =layout/adaptive_layout.dart:69= |
+
+Two files named =kWideBreakpoint = 700= in unrelated repos is a duplicated
+*decision*; seven different values is proof no shared notion exists. **The API
+must therefore not fix a breakpoint** — and better, must not use a width bucket
+at all: voicelab already replaced the bucket with measured extent
+(=chromeTierForExtent=), which is correct for a *vertical* rail where no width
+bucket applies. That matches the standing Dart/Flutter rule ("collapse on
+MEASURED extent, not a width bucket").
+
+The user-preference override exists three times under two names:
+
+#+begin_src text
+textloom/lib/gallery_state.dart:18      enum NavStyle  { auto, rail, bottomBar, toolBar }
+voicelab/.../settings_providers.dart:57  enum NavLayout { auto, rail, bottomBar, toolBar }
+netroute/.../layout_prefs.dart:5     enum NavStyle  { auto, rail, bottomBar }
+#+end_src
+
+(plus =notekeep/app/lib/src/state/nav_style.dart:13=, decommissioning, and
+=ui-kit-private/example/lib/gallery_state.dart:19=, which is textloom's
+ancestor rather than an independent site.) Three live, independent
+declarations of one enum: that is a textbook DRY violation with *different
+text*, which the census's grep-based measure could not see —
+[[file:../../docs/architecture-and-process-design.org]] §1 Direction 2.
+
+** 2.2 Tier 1 first: promote the chrome model, unchanged
+
+The mechanism already exists twice and is *already state-agnostic in both
+copies*. =textloom/lib/chrome/= is the ancestor (=chrome_action.dart= 53,
+=action_strip.dart= 136); =voicelab/ui/voicelab-ui/lib/app/chrome/= is the
+strict superset (=chrome_action.dart= 159 + =chrome_tier.dart= 63 +
+=action_strip.dart= 262), and its header says so verbatim: "Ported from textloom's
+=lib/chrome/action_strip.dart=".
+
+voicelab's additions over textloom's: =ChromeDestination= (selected + onSelected),
+=ChromeEntry= (=minTier= + =drawerTile=), the =stripActionsFor= /
+=drawerTilesFor= / =fixedEntryCount= partition, =ChromeTier= +
+=chromeTierForExtent=, and the toolbar-scale metric functions. All are additive;
+textloom's usage compiles against the superset unchanged. This is a *STALE* fork in
+the census's taxonomy with textloom as the stale side, and it needs no union
+design — take voicelab's, verify textloom against it.
+
+Promote verbatim to =desktop_kit/lib/src/chrome/=, add one enum:
+
+#+begin_src dart
+/// The user's navigation-placement preference. Replaces textloom's NavStyle,
+/// voicelab' NavLayout and netroute_manager's NavStyle. `auto` is the only value
+/// that consults the window; `toolBar` is explicit-only (never auto-selected)
+/// — that rule is textloom's, adopted verbatim because voicelab independently
+/// arrived at it.
+enum NavPlacement { auto, rail, bottomBar, toolBar }
+#+end_src
+
+*A contract the promotion must carry, or it reintroduces a documented bug.*
+=ActionStrip= derives its icon colours from =Theme.of(context).navigationRailTheme=
+and not from raw =ColorScheme= roles, deliberately —
+=action_strip.dart:184-197= explains that a chrome glyph painted with the raw
+muted role disappears into a shaded rail, and that voicelab's =AppTheme= brightens the
+rail role for exactly that reason. So the tier-1 chrome package's documented
+precondition is: *the host's theme must set
+=navigationRailTheme.unselectedLabelTextStyle.color=*. =AppearanceScope= (§4)
+guarantees it. Promoting =ActionStrip= without that contract re-opens the bug in
+every app whose theme leaves the role at the M3 default.
+
+** 2.3 Tier 2: =ChromeScaffold=
+
+#+begin_src dart
+/// Renders one ordered chrome list in whichever placement the user's settings
+/// resolve to, and hosts one body under a stable key so a placement change
+/// REPARENTS rather than rebuilds it.
+///
+/// Reads [appKitSettingsProvider] for `navPlacement`. Everything else is a
+/// parameter, so an app that has no settings model at all can pass a literal.
+class ChromeScaffold extends ConsumerWidget {
+  const ChromeScaffold({
+    super.key,
+    required this.entries,
+    required this.body,
+    this.banners = const <Widget>[],
+    this.drawerHeader,
+    this.drawerExtras = const <Widget>[],
+    this.placement,
+    this.scale = 1.0,
+    this.bottomBarAutoHideSeconds = 0,
+    this.hamburgerAlways = false,
+    this.gapAllowance = 2,
+    this.contentKey,
+  });
+
+  /// The app's ONE ordered chrome list. A builder, not a list, because entries
+  /// carry callbacks that close over `ref`.
+  final List<ChromeEntry> Function(BuildContext context, WidgetRef ref) entries;
+
+  /// The single body. A `Widget`, never a router or a pane list — see §2.5.
+  final Widget body;
+
+  /// Status affordances stacked above the body in every placement.
+  final List<Widget> banners;
+
+  final Widget? drawerHeader;
+
+  /// Drawer rows that are NOT the tier's complement — affordances that live
+  /// somewhere else entirely and would be unreachable at a narrow tier.
+  final List<Widget> drawerExtras;
+
+  /// Overrides the settings-resolved placement. Null = read settings.
+  final NavPlacement? placement;
+
+  /// Chrome scale. Defaults to 1.0 because exactly ONE app has this setting
+  /// (§5.6) — it is a parameter, not a settings-model member.
+  final double scale;
+
+  /// 0 = a static bottom bar. >0 auto-hides via the kit's AutoHideBottomBar.
+  final int bottomBarAutoHideSeconds;
+
+  /// Forces the hamburger even when the tier dropped nothing.
+  final bool hamburgerAlways;
+
+  /// Entries' worth of room the flex gap must keep. See chromeTierForExtent.
+  final int gapAllowance;
+
+  /// Supply to share one body element across several ChromeScaffolds.
+  final GlobalKey? contentKey;
+}
+#+end_src
+
+Two required arguments. What it does, all of it lifted from
+=voicelab/.../app_shell.dart= lines 274–491, generalised:
+
+1. resolve =NavPlacement → ChromePlacement=, consulting the window only for
+   =auto=;
+2. build the entry list once and hand the *same* list to every placement;
+3. measure the tier from the real list via =chromeTierForExtent(extent: rail ?
+   height : width, ...)=;
+4. partition =stripActionsFor= / =drawerTilesFor= — so "nothing becomes
+   unreachable" is a property of one expression, not of two hand-kept lists;
+5. offer the drawer when =dropped.isNotEmpty || drawerExtras.isNotEmpty ||
+   hamburgerAlways= — an OR the caller may add to and never subtract from;
+6. render rail / top / bottom, with =AutoHideBottomBar= when asked;
+7. wrap =body= in a stable =GlobalKey= so switching chrome reparents it.
+
+** 2.4 Migration: the hardest pair
+
+*Smallest — alert-log, 53 lines
+(=ui/alert_log_ui/lib/app/app_shell.dart=).* Today: a
+=ConsumerWidget= reading =_selectedNavProvider= and =wsConnectionStatusProvider=,
+a =Row[AppNavRail | VerticalDivider | IndexedStack(6 views)]=. After:
+
+#+begin_src text
+ChromeScaffold(
+  entries: (c, ref) => [ for (final d in NavDestination.values)
+      ChromeEntry(action: ChromeDestination(buttonKey: Key('nav-${d.name}'),
+        icon: d.icon, label: d.label, selected: d == sel,
+        onSelected: () => ref.read(_selectedNavProvider.notifier).state = d)),
+    const ChromeEntry(action: ChromeGap()),
+    ChromeEntry(action: ChromeWidget((c, _) => const ServiceHealthDot())),
+    ChromeEntry(action: ChromeButton(... about ...)) ],
+  body: IndexedStack(index: sel.index, children: const [...]),
+)
+#+end_src
+
+≈53 → ≈25 lines, and it *gains* a bottom-bar placement, a measured collapse and
+a drawer it never had. Its private =_WsStatusIndicator= (inside
+=widgets/nav_rail.dart=, 152) and its inline =showDesktopKitAbout= call
+(=nav_rail.dart:54-67=) both become entries — which is how a shell absorbs
+things that had nowhere else to go.
+
+*Largest — voicelab, 1392 lines
+(=ui/voicelab-ui/lib/app/app_shell.dart=).* Honest accounting, because the
+claim "app_kit absorbs the shell" would be false:
+
+| Region | Lines (approx) | Verdict |
+|--------|----------------|---------|
+| =_buildScaffold= 274–491 — placement, tier math, strip/drawer partition, three renderings | ≈218 | *absorbed* → a =ChromeScaffold(...)= call, ≈15 lines |
+| =_NavDrawer= 1061–1150 | ≈90 | *absorbed* (the scaffold builds the drawer) |
+| =_buildChromeEntries= 550–756 | ≈206 | **stays app-local** — this is voicelab content |
+| =_KanaToggleButton=, =_KanaToggleTile=, =_KeymapToggleTile=, =_CreateAudioButton=, =_BufferTabBar=, =_BufferTab=, =_BackendStatusIcon=, =_SharedContent=, =_SpanHostedContent= | ≈630 | **stays app-local** |
+| =Tool= enum, =_railTools=, =_destinationTiers=, =kGenerateTools=, hidden-tool redirect, =_toolBeforeSettings=, =HardwareKeyboard= global chord | ≈240 | **stays app-local** — §5.5 |
+
+≈1392 → ≈1050 app-local; ≈310 absorbed. Counted by generic-vs-specific, its
+chrome list is 8 generic entries (hamburger, keymap chip, file menu, gap, status
+glyph, about, settings, help) against 3 voicelab-specific (speakers, create-audio,
+playback) plus N destinations. So the *entries* are mixed and stay; the
+*policy around them* is uniform and goes.
+
+**The pair lands on one API because the API models the policy and not the
+content.** alert-log gave up on everything except a rail; voicelab
+gave up on nothing and paid 218 lines for it. Those are the same requirement at
+two budgets, exactly as the census says — and the API is the policy both
+budgets share.
+
+** 2.5 The one decision that makes six apps fit
+
+=body= is a =Widget=, and =selected= is not a =ChromeScaffold= parameter at
+all — it lives in the caller's =ChromeDestination.selected= booleans.
+
+That is what lets =task-board= (=go_router=; its =AppShell= takes =required
+this.child= and derives the index from =GoRouterState.of(context).uri.path=) and
+the five index-driven apps share one scaffold. A =ChromeScaffold= that owned
+routing, or that took =List<Widget> panes= + =int index=, would fit five apps and
+exclude the sixth. =go_router= has exactly one consumer in this family (§5.7), so
+the API must not know it exists.
+
+* 3. Shape 2 — settings
+
+** 3.1 The premise correction that reshapes this API
+
+[[file:framework-subsumption-design.org]] §2 proposes "=SettingsSchema= —
+declarative categories over tier-1 =SettingsStore=". Measured, that category
+schema **already exists in tier 1 and is already adopted by three apps**:
+
+- =ui-kit-private/lib/src/settings/settings_presentation.dart= declares
+  =SettingsCategory{id, title, icon, content: WidgetBuilder,
+  defaultPresentation, size, showTitle, allowedModes}=, =SettingsPresentation
+  {inline, popup, bottomSheet, topSpan, bottomSpan}=, =SettingsPanelSize=,
+  =SettingsCategoryTile{category, mode, onModeChanged, ...}= (controlled),
+  =openSettingsCategory(...)=, and =encodePresentationPrefs= /
+  =decodePresentationPrefs=.
+- =textloom/lib/settings_categories.dart= (590), =netroute/.../settings/categories.dart=
+  (165) and =gatehub-kit/ui/ghk_dashboard/lib/src/settings/categories.dart= (149)
+  each export the *same* function — =List<SettingsCategory>
+  buildSettingsCategories(BuildContext)= — instantiating the kit's own type.
+
+So a =SettingsSchema= at the category level would be a *fourth* expression of a
+solved problem. Two things are genuinely duplicated, and neither is the schema:
+
+*(a) The typed store.* voicelab and word-bank each declare their own:
+
+#+begin_src dart
+// word-bank/lib/features/settings/settings_models.dart:318
+abstract class SettingsStore {
+  Future<AppSettings> load();
+  Future<void> save(AppSettings settings);
+}
+// voicelab/.../features/settings/providers/settings_providers.dart:492
+abstract class SettingsStore {
+  Future<AppSettings> load();
+  Future<void> save(AppSettings settings);
+}
+#+end_src
+
+Identical shape, independently written, each with its own =FileSettingsStore=
+going straight to =getApplicationSupportDirectory()= + =dart:io= — so unlike the
+kit's store neither is web-portable, and both bypass the =SettingsBackend= seam.
+
+*(b) The startup preamble.* Four apps wrote the same eight lines:
+
+| App | =main.dart= | Shape |
+|-----|-------------|-------|
+| alert-log | :12-25 | =ensureInitialized= → =SettingsStore(...)= → =await store.load()= → =ProviderScope(overrides: [...])= |
+| mail-sweep | :12-24 | same, plus =UiSettings.fromMap(await store.load())= |
+| ghk_dashboard | :18-21 | same, then =App(store:, initialSettings:)= (ChangeNotifier) |
+| netroute_manager | :15-18 | same, then =App(store:, initialSettings:)= (InheritedWidget) |
+
+voicelab is the fifth case and the *interesting* one: =main.dart:38= is
+=runApp(const ProviderScope(child: VoicelabApp()))= with **no pre-load**, so it
+hydrates asynchronously — the exact configuration the standing Riverpod rule
+warns about ("=ref.listen(provider.select(...))= is NOT 'the store loaded'"). A
+migration is a defect fix there, not a refactor.
+
+** 3.2 =AppKitSettings= — the one interface
+
+#+begin_src dart
+/// The slice of an app's own settings model that app_kit reads.
+///
+/// A MIXIN with concrete defaults, not an abstract class: an app implements only
+/// the members it uses, and adding a member here never breaks an existing
+/// implementer. app_kit never CONSTRUCTS the app's model — it asks for a copy
+/// via the `with*` methods, so the app keeps sole ownership of its own
+/// invariants and its own `copyWith`.
+mixin AppKitSettings {
+  /// The user's navigation-placement preference. Justified by three live
+  /// declarations (textloom NavStyle, voicelab NavLayout, netroute_manager NavStyle).
+  NavPlacement get navPlacement => NavPlacement.auto;
+  AppKitSettings withNavPlacement(NavPlacement v) => this;
+
+  /// Per-category presentation choices. Justified by textloom (correct) plus the
+  /// identical missing-persistence defect in netroute_manager and ghk_dashboard
+  /// (§3.3) — one decision, three sites.
+  Map<String, SettingsPresentation> get presentationPrefs => const {};
+  AppKitSettings withPresentationPrefs(Map<String, SettingsPresentation> v) => this;
+
+  /// Theme/appearance. Justified by alert-log, ghk_dashboard and
+  /// mail-sweep, which each hold the kit's AppearanceSettings themselves.
+  AppearanceSettings get appearance => const AppearanceSettings();
+  AppKitSettings withAppearance(AppearanceSettings v) => this;
+}
+
+/// Reads the app's settings. app_kit declares it; the APP overrides it in
+/// `ProviderScope(overrides: [...])`. Unimplemented by default so a missing
+/// override fails loudly at first read rather than silently serving defaults.
+final Provider<AppKitSettings> appKitSettingsProvider =
+    Provider<AppKitSettings>((ref) => throw UnimplementedError(
+        'override appKitSettingsProvider with your app settings notifier'));
+
+/// Writes. Same override contract.
+final Provider<void Function(AppKitSettings Function(AppKitSettings))>
+    appKitSettingsWriterProvider = Provider(...);
+#+end_src
+
+Three members. =chromeScale= and =bottomBarAutoHideSeconds= are deliberately
+*not* here — one app has them (§5.6), so they are =ChromeScaffold= parameters.
+That asymmetry is the two-consumer rule doing its job inside a single API.
+
+** 3.3 =AppSettingsController<T>= and =SettingsCategoriesPage=
+
+#+begin_src dart
+/// How an app's settings model crosses the JSON boundary. Defensive parsing is
+/// the implementer's obligation: type-test, never cast — a mistyped key must
+/// cost only itself, not the whole file.
+abstract class AppSettingsCodec<T extends AppKitSettings> {
+  T get defaults;
+  T fromJson(Map<String, dynamic> json);
+  /// Sparse — omit values equal to the default, so a changed default takes
+  /// effect and the file stays minimal.
+  Map<String, dynamic> toJson(T value);
+}
+
+/// Typed, debounced, explicitly-hydrated settings over the kit's raw-JSON
+/// SettingsStore.
+class AppSettingsController<T extends AppKitSettings> extends Notifier<T> {
+  AppSettingsController({required this.store, required this.codec});
+
+  final SettingsStore store;          // tier 1, unchanged
+  final AppSettingsCodec<T> codec;
+
+  /// Completes when the store's load has been merged into state.
+  ///
+  /// Assigned in build(), and it is the ONLY correct hydration signal. A
+  /// consumer that hydrates off `ref.listen(select(...))` also fires for its
+  /// OWN writes, marks itself hydrated from its own echo, and then adopts the
+  /// store's older value when the async load lands.
+  late final Future<void> loaded;
+
+  @override
+  T build() { ... }                    // synchronously returns codec.defaults
+
+  /// Mutate + schedule a debounced save. Reconciles rather than clobbers if the
+  /// load has not landed yet.
+  void update(T Function(T current) mutate);
+
+  Future<void> flush();
+  ValueNotifier<DateTime?> get savedAt => store.savedAt;  // feeds SavedIndicator
+}
+
+/// The pre-runApp load the four apps hand-rolled. Returns a seed so the app can
+/// build its ProviderScope overrides synchronously.
+Future<({T settings, SettingsStore store})> loadAppSettings<T extends AppKitSettings>({
+  required String appId,
+  required AppSettingsCodec<T> codec,
+  String fileName = 'settings.json',
+  SettingsBackend? backend,           // inject MemorySettingsBackend in tests
+});
+#+end_src
+
+#+begin_src dart
+/// The settings page netroute_manager (48) and ghk_dashboard (53) both wrote.
+class SettingsCategoriesPage extends ConsumerWidget {
+  const SettingsCategoriesPage({
+    super.key,
+    required this.categories,
+    this.header,
+    this.footer,
+    this.padding = const EdgeInsets.all(12),
+    this.spanHost,
+  });
+
+  final List<SettingsCategory> Function(BuildContext) categories;
+  final Widget? header;   // both apps put a title + SavedIndicator here
+  final Widget? footer;   // netroute_manager put its About button here
+  final EdgeInsets padding;
+
+  /// Non-null enables the topSpan/bottomSpan presentations (textloom's case).
+  final SettingsSpanHost? spanHost;
+}
+#+end_src
+
+One required argument. It reads =presentationPrefs= from
+=appKitSettingsProvider= and writes through =withPresentationPrefs=, so the
+per-category mode *persists*.
+
+*Adopting it fixes a verified defect in both justifying apps.* Neither
+=netroute/.../screens/settings_screen.dart= nor
+=gatehub-kit/.../screens/settings_screen.dart= calls
+=encodePresentationPrefs=/=decodePresentationPrefs= — both hold =final
+Map<String, SettingsPresentation> _modes= in a plain =State= field with
+=setState=. The functions exist in tier 1 and are exercised by the kit's tests
+and by textloom; these two apps simply never wired them, so a user's presentation
+choice is discarded on restart in both. The shared page cannot have that bug,
+because the persistence is where the mode map is.
+
+It also fixes a second, structural one: both apps render the categories in a
+=ListView=, which builds lazily — a category below the fold is not in the widget
+tree, so =find.byKey= reports it missing and a test cannot reach it. For a page
+whose entire purpose is to be the reachable home of everything a responsive
+layout collapsed into it, =SingleChildScrollView= + =Column= is correct and two
+dozen rows do not need lazy layout.
+
+** 3.4 Migration: largest and smallest
+
+*Largest — voicelab =settings_pane.dart= (3,157) +
+=settings_providers.dart= (830).* Only the *store and provider tail* moves:
+=abstract class SettingsStore= + =FileSettingsStore= + =MemorySettingsStore= +
+the =StateNotifier<AppSettings>= (≈180 of the 830) become
+=AppSettingsController<TtsSettings>= + a codec. =AppSettings= itself stays —
+it is voicelab's model, with =toJson= already sparse and =fromJson= already
+type-testing. The 3,157-line pane stays entirely: its ≈19 private sections are
+voicelab content, and their order is fixed by a prose comment rather than a data
+structure, so there is nothing to lift. Optional second step: wrap each existing
+section in a =SettingsCategory= and render through =SettingsCategoriesPage=,
+which buys presentation modes for free — but that is adoption of *tier 1*, and it
+is independent of app_kit.
+
+*Smallest — mail-sweep =settings_view.dart= (161) +
+=settings_providers.dart= (40).* Already the thinnest kit usage in the family:
+it builds the kit =SettingsStore= directly and layers a 24-line =UiSettings=. It
+becomes =loadAppSettings<UiSettings>(appId: ..., codec: ...)= plus =with
+AppKitSettings= on =UiSettings=, and =scheduleSettingsSave(WidgetRef)=
+disappears into =controller.update=. ≈40 → ≈12.
+
+* 4. Shape 3 — theme entry point
+
+** 4.1 What is duplicated is the tail, precisely
+
+The kit owns the maths *and* the controlled UI: =DeskTheme.light/dark=,
+=DeskPalette= (a =ThemeExtension=), =presets=, =apca=, =contrast=, =hct_tools=,
+=AppearanceSettings=, =buildAppearanceTheme(settings, brightness, {palette})=,
+=AppearancePane{value, onChanged, extraFontFamilies, showPreview}=,
+=applyUiScale(context, scale, child)=.
+
+Four apps then hold =AppearanceSettings= and build both =ThemeData=s themselves,
+in four different state idioms:
+
+| App | How it holds appearance | Persist / hydrate |
+|-----|------------------------|-------------------|
+| alert-log | *six* separate Riverpod providers — =themeProvider=, =themeModeProvider=, =displayProvider=, =seedColorProvider=, =backgroundOverrideProvider=, =foregroundOverrideProvider= | kit =SettingsStore=; =uiSettingsOverrides()= |
+| ghk_dashboard | =AppState extends ChangeNotifier= with =lightTheme()= / =darkTheme()= | kit =SettingsStore=; =loadMap()= pre-frame |
+| mail-sweep | =UiSettings.appearance= (one field) | kit =SettingsStore= |
+| mountbridge | =AppearanceController= on =provider= | own |
+
+alert-log's six-way split of one value type is itself a defect
+source — six providers that must stay mutually consistent where the kit already
+ships one immutable =AppearanceSettings=. The shared tail holds *one value*, and
+that is most of its worth.
+
+The 501 differing lines between word-bank (262) and voicelab (601) are a *different*
+problem and app_kit does not touch them: both are their own =AppTheme.light/dark=
+resolving =FlexColorScheme= presets by name, with independently re-implemented
+surface-folding and WCAG guards (word-bank re-implements =contrastRatio=,
+=isDistinguishable=, =contrastingOn= that the kit already exports). Migrating
+them is a tier-1 adoption with a *named behaviour change* — the kit's preset set
+is =kThemePresets= (6 =DeskPalette= presets), not =FlexColorScheme='s. That is
+invariant I4 in [[file:framework-subsumption-design.org]] §1, and it is why they
+are not in this tranche.
+
+** 4.2 =AppearanceScope=
+
+#+begin_src dart
+/// Turns the app's AppearanceSettings into the pair of ThemeDatas and the
+/// ThemeMode a MaterialApp needs, and applies the UI scale.
+///
+/// Guarantees the tier-1 chrome contract (§2.2): the built themes always set
+/// `navigationRailTheme` icon/label colours against the resolved page
+/// background, so an ActionStrip glyph cannot vanish on a shaded rail.
+class AppearanceScope extends ConsumerWidget {
+  const AppearanceScope({
+    super.key,
+    required this.builder,
+    this.paletteOf,
+    this.themeMode,
+    this.extend,
+  });
+
+  /// Receives the resolved themes. `builder` rather than a MaterialApp so an
+  /// app keeps ownership of its own MaterialApp (title, routes, locales).
+  final Widget Function(BuildContext, ThemeData light, ThemeData dark, ThemeMode)
+      builder;
+
+  /// Supply an app-specific DeskPalette subclass — alert-log's
+  /// NotifPalette is the worked example, and the ThemeExtension `type`
+  /// override it needs is the reason this is a hook and not a parameter.
+  final DeskPalette? Function(AppearanceSettings)? paletteOf;
+
+  /// Overrides the settings-resolved mode. Null = read settings.
+  final ThemeMode? themeMode;
+
+  /// Last-mile app theming, applied AFTER the kit's build so an app can set
+  /// its own component themes without forking the whole wiring.
+  final ThemeData Function(ThemeData base, Brightness b)? extend;
+}
+#+end_src
+
+Two required-ish arguments (=builder=; =paletteOf= optional). Zero state
+arguments — appearance comes from =appKitSettingsProvider=.
+
+** 4.3 Migration: largest and smallest
+
+*Largest of the migratable set — alert-log
+(=theme_providers.dart= 124 + =app_theme.dart= 79 + =notif_palette.dart= 188).*
+The six providers collapse into one =AppearanceSettings= field on its
+=UiSettings=; =AppTheme.light/dark= (a thin =ThemePreset= → =DeskTheme= adapter)
+disappears; =uiSettingsOverrides()= becomes =loadAppSettings=;
+=NotifPalette= *stays* and is passed as =paletteOf= — it carries
+notification-category and notification-type colour maps that are irreducibly
+this app's. ≈203 of 391 lines absorbed, and the six-provider consistency hazard
+goes with them.
+
+*Smallest — task-board (=app_theme.dart= 81 + =theme_provider.dart= 35).* Its
+=ThemeModeNotifier extends Notifier<AppThemeMode>= over =SharedPreferences=
+becomes the =appearance.mode= field of an =AppSettingsController=; its
+=AppThemeMode {auto, light, dark, highContrast, blue, green, purple}= is *not*
+=ThemeMode= — the four extra members are colour choices, which map to
+=AppearanceSettings.presetName= + =mode=. So its 116 lines become ≈10 plus a
+one-time enum translation, and it drops the =SharedPreferences= dependency in
+favour of the kit store. This is the cheapest theme migration in the family and
+it is the same app the census names as the cheapest pilot overall.
+
+* 5. Shape 4 — status / connection
+
+** 5.1 The shapes, measured
+
+| Rendering | Independent implementations |
+|-----------|----------------------------|
+| top banner | mail-sweep =connection_banner.dart= 91, netroute_manager =connection_banner.dart= 49, mountbridge =update_banner.dart= 38 + =restart_banner.dart= 29 — *3 apps* |
+| inline chip / badge | mail-sweep =status_badge.dart= 35, netroute_manager =status_chip.dart= 39 — *2 apps* |
+| LED dot | kit =led_indicator.dart= 168 (used by ghk_dashboard), task-board's 99-line fork (the ORPHAN), alert-log's *private* =_WsStatusIndicator= inside =nav_rail.dart= |
+| card | mountbridge =service_status_card.dart= 94 — 1 |
+| strip | ghk =state_strip.dart= 326 — 1, and it is a chart |
+| SnackBar | voicelab =app_status.dart= — 1 |
+
+Both connection banners are =const ConnectionBanner({super.key})= — *zero*
+arguments, reading their own app's state internally. That is the signature of a
+component nobody could share even if they wanted to.
+
+** 5.2 The decision underneath, which is not a widget
+
+Behind three renderings sits one state machine, expressed five ways:
+
+| App | Expression | Lines |
+|-----|-----------|-------|
+| alert-log | =WebSocketClient= — =WsStatus {connecting, connected, disconnected}=, =_reconnectDelay= doubled and clamped to =[wsReconnectBaseMs, wsReconnectMaxMs]=, =errorStream=, =lastError=, seeded =status= getter for late subscribers | 133 |
+| task-board | =WebSocketClient= — =_initialBackoff * (1 << _reconnectAttempts)=, =_maxReconnectAttempts=, feed re-subscription on reconnect | 177 |
+| ghk_dashboard | =abstract class HealthProbe { Future<bool> check(String baseUrl); }= — "failure IS a normal answer, not an exception", polled on a timer, three rail LEDs | 23 + =ProbeStatus= |
+| mail-sweep | =backend_providers.dart= → =AsyncValue<ConnectionResponse>= | 86 |
+| mountbridge | =ServiceStatus{activeState, enabled, unitPath}= + =isRunning/isFailed/isStopped= over D-Bus | 24 |
+
+Same filename in two repos, 220 differing lines of 310 — *not* a textual fork,
+and therefore invisible to the census's grep. It is one decision ("what are the
+connection states, when do we retry, and how do we say why") with five
+dissimilar expressions: [[file:../../docs/architecture-and-process-design.org]]
+§1 Direction 2, and the most expensive kind because measurement cannot see it.
+
+** 5.3 The API
+
+Tier 1 — two controlled widgets beside the existing =LedIndicator=, promoted
+from the union of the four banner/chip forks:
+
+#+begin_src dart
+/// A dismissible-free status banner. Renders nothing when `status` is healthy,
+/// which is what all three existing banners do.
+class HealthBanner extends StatelessWidget {
+  const HealthBanner({
+    super.key, required this.status, required this.message,
+    this.onRetry, this.retryLabel = 'Retry', this.actions = const <Widget>[],
+  });
+  final LedStatus status; final String message; final VoidCallback? onRetry; ...
+}
+
+class HealthChip extends StatelessWidget {
+  const HealthChip({super.key, required this.status, required this.label, this.dense = false});
+}
+#+end_src
+
+Tier 2 — the state machine:
+
+#+begin_src dart
+enum ServiceHealth { unknown, connecting, healthy, degraded, unreachable }
+
+@immutable
+class ServiceHealthState {
+  const ServiceHealthState({required this.health, this.detail, this.since, this.attempt = 0});
+  final ServiceHealth health;
+  /// Why, in the user's words. Mandatory in spirit, following the kit's
+  /// CapabilityStatus.detail precedent: "unsupported" is not an acceptable
+  /// value. Feeds the banner text and the LED tooltip.
+  final String? detail;
+  final DateTime? since;
+  final int attempt;
+  LedStatus get led => switch (health) { ... };   // the ONE mapping
+}
+
+class BackoffPolicy {
+  const BackoffPolicy({
+    this.base = const Duration(seconds: 1),
+    this.max = const Duration(seconds: 30),
+    this.maxAttempts,                 // null = retry forever (nh's behaviour)
+    this.factor = 2,
+  });
+  Duration delayFor(int attempt);
+}
+
+/// Polls or watches ONE dependency and publishes its health. The PROBE stays
+/// app-local — websocket / HTTP / D-Bus / gRPC / subprocess are irreducibly
+/// different. The state machine, the backoff, and the vocabulary are shared.
+class ServiceHealthController extends Notifier<ServiceHealthState> {
+  ServiceHealthController({
+    required this.probe,              // Future<ServiceHealthState> Function()
+    this.interval = const Duration(seconds: 10),
+    this.backoff = const BackoffPolicy(),
+    this.name = '',
+  });
+  Future<void> retryNow();
+  void pause();                       // window unfocused / app backgrounded
+}
+
+/// One controller per named dependency — ghk_dashboard needs three at once.
+final serviceHealthProvider = NotifierProviderFamily<ServiceHealthController,
+    ServiceHealthState, ServiceHealthSpec>(...);
+#+end_src
+
+Two required-ish arguments (=probe=). The probe contract adopts ghk's rule
+verbatim, because it is right and it is already written down: *a probe must never
+throw* — a failure is a normal answer, and a timer callback that can throw
+crashes the shell's polling.
+
+** 5.4 Migration: largest and smallest
+
+*Largest — task-board =websocket_client.dart= (177).* The transport and the
+feed-subscription logic stay (=subscribeFeed=/=unsubscribeFeed= and the
+re-subscribe-on-reconnect step are task-board's protocol). =_reconnectAttempts=,
+=_initialBackoff=, =_maxReconnectAttempts=, =_scheduleReconnect= and the
+implicit status become =BackoffPolicy= + =ServiceHealthController=. ≈60 of 177
+absorbed — and task-board *gains* an explicit status enum it does not currently
+have, which is why it currently has no connection affordance at all.
+
+*Smallest — mountbridge =ServiceStatus= (24) + =restart_banner= (29) +
+=update_banner= (38).* mountbridge is on =provider=, not Riverpod, so it **cannot
+adopt tier 2 at all** — and that is the tier boundary working as designed, not a
+gap. It can adopt the tier-1 =HealthBanner= today: its three zero-argument
+banners become three =HealthBanner(status:, message:, onRetry:)= calls inside
+its existing =context.watch<DbusService>()= builds. ≈95 → ≈35, with no state
+migration. This is the case that proves tier 1 must stay agnostic forever.
+
+* 6. Shape 5 — about / version: app_kit gets nothing
+
+The brief's framing — "kit has =about_dialog= (231) and three apps wrote their
+own anyway ... a discoverability failure" — does not survive measurement. Three
+corrections:
+
+1. **Four apps already call the kit's dialog.** =showDesktopKitAbout(context,
+   {required appName, icon, tagline, version, serviceVersion, sections,
+   applicationLegalese})= is called by netroute_manager
+   (=settings_screen.dart:38-43=), ghk_dashboard (=about_screen.dart=),
+   mail-sweep (=settings_view.dart:71-87=) and alert-log
+   (=nav_rail.dart:54-67=).
+2. **ghk's 50-line =about_screen.dart= is not a fork** — it is a screen host
+   whose body *is* a call to the kit's dialog. Counting it as a competing
+   implementation is a mis-read of the census's own table.
+3. **word-bank's 27 lines are Flutter's own =showAboutDialog=**, a deliberate
+   no-extra-dependency choice for a small surface, not a failure to find
+   anything.
+
+That leaves *one* real fork: voicelab' 221 lines. And its cause is a
+**capability gap, not discoverability** — it renders per-library structured
+attribution (four bundled fonts under SIL OFL, =anthy-agent= under LGPL/GPL,
+Google Cloud TTS terms), each needing name + licence + licence URL + copyright
+holder as *fields*. The kit's =AboutSection{title, body, linkUrl}= cannot
+structure that, so voicelab wrote a =_AttributionSection= widget and repeated the
+layout per library.
+
+Therefore:
+
+- =app_kit= gets **no About API**. A re-export would add a second name for
+  something four apps already import correctly at tier 1.
+- The fix belongs in **tier 1**: add an attribution shape to =AboutSection= —
+  =AboutSection.attribution({required name, required licence, licenceUrl,
+  copyright, year})= or a =List<LibraryAttribution> attributions= parameter.
+- It has **one consumer today**, so by the same rule this design applies to
+  itself: *file it, do not build it.* Trigger to build: a second app bundling a
+  licensed asset. (Given the bundled-font rule — "a licence gate must walk the
+  DIRECTORY, not just the manifest" — that second consumer is likely, but likely
+  is not two.)
+
+This correction has a cost worth stating: it removes shape 5 from app_kit's
+requirement list entirely, so app_kit closes four of the five shapes, not five.
+
+* 7. The discoverability position
+
+Shapes 4 and 5 were available and reimplemented. "Better docs" would be an
+answer only if the cause were ignorance. It is not, and the family contains the
+evidence.
+
+** 7.1 Adoption tracks state-ownership cost, not documentation
+
+Every kit component, by required-argument count against measured app adoption:
+
+| Kit component | Required args | State the caller must own | App adopters (excl. origin + =example/=) |
+|---------------|---------------|---------------------------|------------------------------------------|
+| =showDesktopKitAbout= | 1 (=appName=) | none | *4* |
+| =AppearancePane= | 2 (=value=, =onChanged=) | 1 value | *4* (mountbridge, mail-sweep, alert-log, + ghk via =buildAppearanceTheme=) |
+| =SettingsCategoryTile= | 3 | 1 map | *3* (textloom, netroute_manager, ghk_dashboard) |
+| =SettingsCategory= | 4 | none (pure data) | *3* (same) |
+| =SpanHost= | 7 | 3 values + 1 callback | *1* (voicelab) |
+| =AdaptiveLayout= | 10 | 4 values + 3 callbacks | *0* |
+
+The gradient is monotone at both ends, and it is a *cost* gradient, not an
+awareness one: the same authors who adopted the 1-argument component declined
+the 10-argument one. =voicelab= is the extreme case in both directions — the
+family's lowest adoption ratio (16%) and its most forks — and it is also the app
+that wrote 218 lines of shell policy rather than own =AdaptiveLayout='s seven
+state fields.
+
+**So the admission criterion is quantitative, and it is the whole
+position:**
+
+#+begin_quote
+An =app_kit= API must have strictly fewer required arguments than the hand-rolled
+alternative has *lines*. If adopting costs more keystrokes than writing your
+own, availability will not close the gap and neither will documentation.
+#+end_quote
+
+Measured against that bar, every API in §1 is 1–2 required arguments against a
+40–220-line alternative. =ChromeScaffold= replaces 218 lines of voicelab policy with
+two required arguments. That is the mechanism.
+
+** 7.2 The second factor: =LedIndicator= is the counterexample, and it matters
+
+=LedIndicator= has *one* required argument and only one clean adopter. The
+correlation above does not explain it, so the correlation is not the whole story.
+Look at what the non-adopters needed: alert-log's
+=_WsStatusIndicator= is a *private* widget inside =nav_rail.dart= that places a
+dot in a rail's trailing slot with a tooltip and a colour mapping. The dot was
+never the hard part. **When the shared component is smaller than the glue needed
+to place it, inlining wins** — an import plus a wrapper is more code than twenty
+inline lines.
+
+That is a design instruction, not an excuse:
+
+#+begin_quote
+=app_kit='s unit of export is the *composition with the tail already paid*, never
+the leaf. A leaf goes to tier 1 and gets adopted only if it arrives inside a
+composition that has somewhere to put it.
+#+end_quote
+
+=ChromeScaffold= is that composition for the LED: the status glyph is a
+=ChromeEntry(action: ChromeWidget(...))= in a list the scaffold already renders,
+with a tooltip, a tier and a drawer fallback supplied. There is no glue left to
+write, so there is nothing to inline instead.
+
+** 7.3 Three mechanisms, in descending order of how much I trust them
+
+1. *Cheapest path.* §7.1 + §7.2, above. This is the one with measured support.
+2. *Adoption fixes a defect the app has.* =SettingsCategoriesPage= restores
+   presentation-pref persistence that netroute_manager and ghk_dashboard both lost
+   (§3.3), and =SingleChildScrollView= makes categories below the fold
+   test-reachable. =AppSettingsController.loaded= fixes voicelab' async
+   hydration. An adoption that arrives as a bug fix is argued for by the bug
+   tracker, not by a README.
+3. *The =ui0= gate.* "A capability with no =ui0= surface is not done" is a
+   *supply-side* control — it stops app_kit shipping something nobody can see.
+   It does nothing about demand. I am explicitly sceptical that a gallery moves
+   adoption: the kit *has* a 51-file, 12-page gallery, and it did not. Treat
+   =ui0= as the acceptance test it is named as, and do not count it as a
+   discoverability mechanism.
+
+** 7.4 What I would add that is not an API
+
+The census measured adoption as "does the app import the kit?" and that measure
+structurally could not see textloom's fork of =example/= (census §5b). A
+=make adoption-report= that emits, per app, *which kit components are imported
+against which are available* — and flags a local class whose name collides with a
+kit export — would have found both the =task-board= ORPHAN and the textloom fork
+without a human noticing. That is enforcement, which is the category the whole
+migration is short of (§6 of the subsumption design lists "a gate is simply not
+run" as *currently uncontrolled*).
+
+* 8. How this avoids becoming a second flat kit
+
+The kit spans =resize_handle= (63) and =emacs_buffer= (2,768) in one package
+because its only admission test was "is it shared?". Under that test, everything
+qualifies, and flatness follows. Three properties, in descending order of how
+mechanically they hold.
+
+** 8.1 Machine-checked: Riverpod is *required* in every app_kit file
+
+=make deps-guard= for tier 1 forbids state management. The tier-2 guard must not
+merely *permit* Riverpod — it must **require it, per file**:
+
+#+begin_src text
+app_kit tier guard:
+  (a) pubspec MUST declare flutter_riverpod ^3; provider and riverpod 2.x are errors
+  (b) EVERY .dart under app_kit/lib/src/ must import flutter_riverpod
+      (or be a `part of` a library that does)
+#+end_src
+
+Clause (b) is the anti-flatness property, and it works because of what it
+excludes. A leaf widget does not need Riverpod, so it *cannot* enter app_kit — it
+fails the guard and is redirected to tier 1. =emacs_buffer= could never land
+here; neither could =resize_handle=; neither could =ActionStrip=, which is
+exactly why §2.2 promotes it to tier 1 instead. The category of thing that made
+the kit flat is mechanically inadmissible.
+
+It also converts the two-consumer rule from a convention into something with
+teeth on the *other* axis: a component that passes the two-consumer test but
+fails clause (b) is still not app_kit code, so "two apps have it" can no longer
+be used to smuggle a widget into the shell tier.
+
+** 8.2 Review-checked: no export whose build does more than select and delegate
+
+Every =app_kit= widget's =build= reads providers and delegates to a tier-1
+widget. A file past ~150 lines is doing widget work and is a review flag rather
+than a violation. I am labelling this honestly: it is *not* machine-checked, and
+a guard that pretended to check it would be a guard that lies.
+
+** 8.3 Structural: the tail is bounded by the widget
+
+A provider tail cannot grow without bound the way an editor can, because its size
+is set by the surface it binds — =AppearanceScope= is as big as
+=AppearanceSettings= has fields, and no bigger. Six exports binding six tier-1
+surfaces is a package with a *ceiling*. "Shared code" has none.
+
+** 8.4 The size bar
+
+app_kit is 6 public types + 3 helper functions across ≈5 files. Against them:
+
+| Absorbed (app-side, measured where the file exists) | Lines |
+|-----------------------------------------------------|-------|
+| shell policy — voicelab ≈310, ghk's rail/bar switch + LED composition, lb 116, task-board 118, mail-sweep ≈40, alert-log ≈28 | ≈700 of 2,181 |
+| voicelab + word-bank typed =SettingsStore= / =FileSettingsStore= / =MemorySettingsStore= + notifier | ≈330 |
+| 4 apps' =main.dart= load preamble | ≈40 |
+| lb + ghk =settings_screen.dart= hosts | 101 |
+| alert-log 6 theme providers + =app_theme= adapter; ghk =AppState= theme tail; task-board =theme_provider= | ≈290 |
+| 2 websocket backoff/status machines | ≈120 of 310 |
+| *total absorbed* | *≈1,580* |
+
+≈1,580 app-side lines replaced by an estimated ≈650–750 shared lines. Smaller
+than the sum, as required — **and the estimate of app_kit's own size is a
+design estimate, not a measurement**, because no code exists. The absorbed
+column is measured; the shared column is not.
+
+* 9. Where the existing tiering is wrong
+
+** 9.1 Four of five shapes are mis-tiered in the design's own table
+
+[[file:framework-subsumption-design.org]] §2 assigns =AppScaffold=,
+=StatusAffordance= and the About re-export to tier 2. Measured, all three are
+state-agnostic: the chrome model carries no state dependency in *either*
+existing implementation, both connection banners take zero arguments, and the
+About dialog is a function four apps already call at tier 1. Putting the widget
+in tier 2 and leaving the tail unaddressed is precisely the =AdaptiveLayout=
+failure mode repeated — the kit got the widget, nobody got the tail, and one app
+used it. The correct split is widget → tier 1, tail → tier 2, per shape.
+
+** 9.2 The axis is wrong: three tiers by opinion-level, when the problem is package granularity
+
+=desktop_kit= is **one pubspec, 23 barrels, 5 dependencies**. A barrel is not a
+dependency boundary and not a version boundary. Two measured consequences:
+
+- *Versioning.* Six apps pin =v0.2.3=; the LED ticker fix =e321e56= is on kit
+  main and in no tag (todo =ed69fdca=). A status fix cannot ship without
+  re-validating the Emacs engine, the IME, and the org support, because they are
+  the same artifact. Splitting =status= into its own package makes a status bump
+  a status bump.
+- *Closure.* A theme-only consumer takes =path_provider= — a dependency that
+  exists solely for =settings_backend_io=. Small today; it is the mechanism by
+  which a monolith's closure grows to its worst member.
+
+Three tiers does not fix this. It produces *three* monoliths where there was one,
+and =app_kit= inherits the same "is it shared?" pressure that flattened the
+first. What fixes it is making the barrels into packages —
+=desktop_kit_core=, =_theme=, =_settings=, =_layout=, =_status=, =_chrome=,
+=_keymap=, =_editor=, =_ime=, =_org=, =_config=, =_clipboard=, =_host=, plus
+=app_kit= — with two rules over the resulting DAG:
+
+#+begin_src text
+R1  No package may depend on a package that requires a state library
+    unless it requires one too.        (this IS the tier boundary, generalised)
+R2  No cycles.
+#+end_src
+
+Both are checkable from the pubspecs. Under R1, "tier 1" and "tier 2" stop being
+names and become a *property* — tier 1 is the set of packages that declare no
+state library, and =app_kit= is the one package that declares
+=flutter_riverpod= as a dependency rather than forbidding it. Nothing else has
+to be decided.
+
+Cost, stated: N pubspecs is real overhead — N version constraints, N
+=pub get=s, a workspace or path-pin web during development, and a real risk of
+under-splitting into packages with one file. It is worth it only because the pin
+surface is *already* fragmented across =path=, a bare sha, =v0.2.3= and
+=v0.2.4=, so the coordination cost is being paid without the benefit.
+
+** 9.3 Are three tiers the right number?
+
+No. The right count is **two rules over N packages, plus one acceptance
+consumer**. "Three tiers" is a naming convention, and the specific thing that
+failed — the shell had nowhere to live — was not a missing *tier*, it was a
+missing *package*. Adding a tier fixes it once; adopting the package DAG fixes
+the next one too. And =ui0= is not a tier at all: tier 3 in a dependency
+hierarchy means "may depend on 1 and 2", which is true of every application in
+the family. =ui0='s distinguishing property is that it is the *acceptance*
+consumer, which is a process role.
+
+** 9.4 =emacs_buffer_editor= (5,949 / 4,115): a package, not a tier
+
+The brief's known anomaly. It is not tier-1 "primitives and engines" by any
+reading — it is a near-application, larger than the kit's own biggest file
+(=emacs_buffer= 2,768), and larger than eight of the eleven apps' entire =lib/=.
+Putting it in tier 1 stretches "primitive" past meaning; leaving it in
+=example/= is the current, worse state (it reads as sample code and is therefore
+treated as disposable while being the largest implementation in the family).
+
+Under §9.2 there is no tension: it is =desktop_kit_editor=, a first-class package
+depending on =_keymap= + =_org= + =_core=, and textloom becomes its thinnest
+consumer. The textloom copy (5,949) is the promotion source — direction is uniform,
+textloom is larger in all 15 diverged files — and =example/='s 4,115-line copy is
+deleted, not merged. =pages/org_editor_page.dart= (1,087 / 1,858) is the same
+shape and travels with it.
+
+** 9.5 The =ui0= seed decision is not blocked by anything in this design
+
+Every app_kit acceptance surface in §10 is a page over =app_kit= plus tier 1.
+None needs the editor, the keymap engine or the IME. So seeding =ui0= from textloom
+(which brings the editor) or from =example/= (which brings the gallery) both
+work, and the app_kit pages are additive under either. This design deliberately
+does not vote — though note that recommending option (b) for the byte-identical
+library files ([[file:duplication-census.org]] §5b) is *already implied* by §9.4:
+promoting the editor into its own package is option (b) executed on the largest
+file rather than the smallest.
+
+* 10. =ui0= surface per API
+
+An app_kit capability with no =ui0= surface is not done. Concretely:
+
+| API | =ui0= surface | What it has to demonstrate |
+|-----|---------------|----------------------------|
+| =ChromeScaffold= | the shell of =ui0= itself, plus a *Chrome* page | all four =NavPlacement= values switchable live; the three scales; a resize that collapses the tier and shows the drawer picking up the exact complement; a deliberately-narrow preset asserting *nothing* is unreachable; a body whose scroll offset survives a placement change (proves the reparent) |
+| =AppSettingsController= | =ui0='s own settings + a *Persistence* page | =SavedIndicator= flashing on a debounced write; a fixture with ONE mistyped key proving the other preferences survive; a =flush= + relaunch round-trip; the =loaded= future awaited rather than inferred |
+| =SettingsCategoriesPage= | =ui0='s Settings page | all five =SettingsPresentation= modes per category; the mode surviving a relaunch (the defect §3.3 names); a category below the fold reachable by =find.byKey= without scrolling |
+| =AppearanceScope= | *Appearance* page | light/dark/system; a background override folding the surface family; a =DeskPalette= subclass through =paletteOf=; an =ActionStrip= glyph visible on the shaded rail — the §2.2 contract, asserted |
+| =ServiceHealthController= | *Health* page | a fake probe with kill/revive toggles driving banner + chip + LED from ONE state; a flap button showing the backoff schedule; =maxAttempts= exhaustion; =retryNow= |
+| (tier 1) =showDesktopKitAbout= | *About* | with an attribution section, since that is the tier-1 gap §6 names |
+
+* 11. What is deliberately left out
+
+This list is the design. Each entry is something a reasonable person would put in
+app_kit, with the measurement that says no.
+
+** 11.1 A settings row / field schema — the obvious API with zero consumers
+
+=SettingsField(label, control, value, onChanged)= is what "declarative settings"
+usually means, and **no app in the family has one.** Every app, without
+exception, declares rows as hand-written widgets wired to explicit
+controllers — voicelab' ≈19 private sections, word-bank's, mountbridge'
+=_SectionHeader= + raw fields, and so on. The two things closest to a row type
+(word-bank's =_SettingsRow=, alert-log's =_RetentionField=) are
+private, single-file =StatelessWidget=s — layout helpers, not schemas.
+
+So the two-consumer rule excludes it, and I think the rule is right here rather
+than merely binding: the *content* of a settings row is where apps genuinely
+differ (a voice picker, a lexicon path, a retention period), and a schema would
+either be so general it saves nothing or so specific it fits one app. Revisit
+trigger: a second app declares a *public* row type.
+
+** 11.2 Every host-touching capability named in the brief
+
+The seam convention (=host_env.dart=: pure interface + conditional-export
+selector + =_io=/=_web=/=_stub=, total interface, branch on capability not
+identity) is mandatory for any seam app_kit grows. Measured, **app_kit has no
+seam to grow today**:
+
+| Capability | Consumers found | Evidence |
+|-----------|-----------------|----------|
+| window state / geometry | *0* | no app depends on =window_manager=; the only =window_size= hits are voicelab's pure width→size-class arithmetic and =chrome_tier=, neither of which calls a host |
+| tray / =StatusNotifierItem= | *1* | mountbridge =sni_indicator.dart= (141). The two other grep hits were the substring =snippet= in =keymap_editor.dart= and =emacs_syntax_samples.dart= |
+| autostart | *0* | no hit anywhere in any Dart file in the namespace |
+| portal =Inhibit= | *0* | one hit, a string inside =textloom/lib/sample_emacs_config.dart= |
+| D-Bus generally | *1* | mountbridge only |
+
+Stating the negative deliberately, so a later session does not read the absence
+as an oversight: the convention *binds prospectively*, and the correct place to
+declare a future host facility is the existing tier-1 =HostCapability= enum
+(=host/capabilities.dart=, 223 lines, with the =full/degraded/absent= grading and
+the mandatory human-readable =detail=) — not a fresh ad-hoc probe. If mountbridge
+gains a sibling that needs a tray, the seam is =host_indicator.dart= +
+=host_indicator_default.dart= + =_io=/=_stub=, and =HostCapability.trayIndicator=
+joins the enum.
+
+** 11.3 voicelab' shell policy that is voicelab-only
+
+=hiddenTools= + the post-frame redirect to the first visible destination;
+=_toolBeforeSettings= (Escape returns to the previous tool); =kGenerateTools=
+(destinations that are selectable but not navigable); the focus-independent
+=HardwareKeyboard= Ctrl+\\ chord. One consumer each. A =hiddenDestinations=
+parameter on =ChromeScaffold= would model voicelab alone, which is how a shared API
+starts fitting exactly one app.
+
+** 11.4 voicelab' theme helpers
+
+=panelShade=, =barSurface=, =barControl=, =onBar=, =editorStyle=,
+=editorTextStyle=, =splitFamilyWeight=. One consumer. Note the tension: the
+promoted =ActionStrip= *depends* on the effect of the rail-brightening these
+produce — resolved by making it a documented contract on =AppearanceScope=
+(§2.2/§4.2) rather than by hoisting voicelab's implementation of it.
+
+** 11.5 The CJK font fallback chain
+
+voicelab (=UD Digi → bundled KleeOne → Noto=) and word-bank (=bundled KleeOne → Noto →
+Source Han=) have the same *shape* and different *content*. Two consumers by
+count, one decision by neither — this is the byte-identical-but-not-DRY case from
+[[file:../../docs/architecture-and-process-design.org]] §1 inverted: merging
+would impose one app's typography on the other, and the "duplication" would
+reappear the moment either wanted a different face. If anything moves, it is a
+=List<String> fallback= *parameter* in tier 1's =font_tools=, never the list.
+
+** 11.6 Chrome scale and bottom-bar auto-hide
+
+=toolbarScale= (with =kToolbarScaleOptions = [1.0, 1.5, 2.0]= and
+=clampToolbarScale=) and =bottomBarAutoHideSeconds=: voicelab only. They are
+=ChromeScaffold= *parameters* with defaults, not =AppKitSettings= members — so
+voicelab passes them and no other app learns they exist. The scale *arithmetic*
+(=chromeIconSizeAt=, =chromeStripThicknessAt=, =chromeStripBottomHeightAt=,
+=chromeIconButtonStyle=) still promotes to tier 1 with the strip, because the
+strip's own extent and its buttons' boxes must derive from one number or they
+drift — which is the bug those functions were written to close.
+
+** 11.7 =go_router= integration
+
+One consumer (task-board). Excluding it is what lets task-board use
+=ChromeScaffold= at all (§2.5).
+
+** 11.8 =StateStrip= (ghk, 326) and =AppStatus= (voicelab SnackBar)
+
+One consumer each, and =StateStrip= is a chart (=List<ChartSeries>= of 0–1
+gauges) rather than a status affordance — the census groups it with the banners
+by name, not by shape.
+
+** 11.9 =WindowSizeClass= (voicelab, =window_size.dart=)
+
+One consumer, and superseded: =chromeTierForExtent= measures the extent the strip
+actually got, which is correct for a vertical rail where no width bucket applies.
+Promoting a width bucket alongside a measured collapse would give the family two
+disagreeing notions of "narrow".
+
+** 11.10 An About API in app_kit
+
+§6. Four apps already use the tier-1 one; the single real fork is a tier-1
+parameter gap with one consumer. Filed, not built.
+
+* 12. Performance
+
+*No performance claim is made, because none was measured.* A sibling agent owns
+the measured baseline; nothing in this document should be read as a performance
+statement, and no figure here is a benchmark.
+
+Two design choices *have* performance intent, stated as intent and unverified:
+
+- =ChromeScaffold= keeps the body under a stable =GlobalKey= so a placement
+  change reparents rather than rebuilds it. voicelab' comment at
+  =app_shell.dart:131-136= asserts this preserves editor buffers and an
+  in-flight render across a resize; that is a *correctness* claim in the source,
+  not a measured cost.
+- =AppKitSettings= is read through =ref.watch(provider.select(...))= at each
+  consumer so flipping one chrome toggle does not rebuild the =IndexedStack= of
+  panes. Also unmeasured.
+
+Both belong in the baseline the sibling agent owns, not here.
+
+* Source Verification Notes
+
+** Verified in code, 2026-07-29 (files read directly)
+- =ChromeAction= / =ChromeGap= / =ChromeButton= / =ChromeWidget= /
+  =ChromeDestination= / =ChromeEntry= / =stripActionsFor= / =drawerTilesFor= /
+  =fixedEntryCount=: ✓ read =voicelab/ui/voicelab-ui/lib/app/chrome/chrome_action.dart=
+  (159) in full. =ChromeTier= + =chromeTierForExtent=: ✓ =chrome_tier.dart= (63)
+  in full. =ActionStrip= + the scale metrics + =chromeIconButtonStyle= +
+  =ChromePlacement=: ✓ =action_strip.dart= (262) in full. Zero state-management
+  import in any of the three.
+- The textloom → voicelab port direction: ✓ stated verbatim in the headers of voicelab's
+  =chrome_action.dart= ("Ported from textloom's =lib/chrome/chrome_action.dart=")
+  and =action_strip.dart=; ✓ textloom's =chrome_action.dart= (53) read in full and
+  is a strict subset.
+- =ActionStrip= reads =Theme.of(context).navigationRailTheme= rather than raw
+  =ColorScheme= roles, with the vanishing-glyph rationale: ✓
+  =action_strip.dart:184-197=.
+- voicelab' shell policy region: ✓ =app_shell.dart= lines 1–560 read directly;
+  the placement/tier/drawer/partition logic is lines 274–491.
+- alert-log (53), mail-sweep (103), task-board (118), netroute_manager
+  (116) shells: ✓ all four read in full.
+- ghk_dashboard shell (399), textloom =action_strip.dart= (136), textloom's
+  =_placement= / =_buildActions=, =window_size.dart=, =AdaptiveLayout= and
+  =SpanHost= constructors: ✓ extracted by a subagent reading the files;
+  signatures quoted from its report, not re-derived from memory.
+- =AdaptiveLayout= 10 required arguments; =SpanHost= 7: ✓ constructors quoted.
+- =AdaptiveLayout= adopters: ✓ =grep -rln 'AdaptiveLayout('= over all app trees,
+  =.worktree= excluded — hits are task-board's own fork + its test + two
+  task-board screens + =ui-kit-private/example/lib/pages/layout_page.dart=.
+  No other app.
+- =desktop_kit_layout= importers: ✓ =grep -rl= — voicelab's =app_shell.dart=, one voicelab
+  test, and the kit's =example/=. Three files family-wide.
+- Nav-placement enum declarations: ✓ =grep -rn 'enum NavStyle\|enum NavLayout'= —
+  textloom =gallery_state.dart:18=, voicelab =settings_providers.dart:57=, netroute_manager
+  =layout_prefs.dart:5=, notekeep =nav_style.dart:13=, kit
+  =example/lib/gallery_state.dart:19=.
+- Breakpoint constants: ✓ =grep -rn= — the seven values in §2.1 with file:line.
+- =SettingsCategory= / =SettingsPresentation= / =SettingsPanelSize= /
+  =SettingsCategoryTile= / =openSettingsCategory= / =EscapeToPop= /
+  =encodePresentationPrefs= / =decodePresentationPrefs= / =SettingsStore= /
+  =SettingsBackend= / =MemorySettingsBackend= / =SavedIndicator=: ✓ extracted
+  from the kit's =lib/src/settings/= by a subagent reading the files.
+- Three apps call =buildSettingsCategories(BuildContext)= over the kit's
+  =SettingsCategory=: ✓ textloom =lib/settings_categories.dart=, netroute_manager
+  =lib/src/settings/categories.dart=, ghk_dashboard
+  =lib/src/settings/categories.dart=.
+- *netroute_manager and ghk_dashboard do not persist presentation prefs:* ✓ both
+  =settings_screen.dart= files read in full (48 / 53 lines) — a plain
+  =Map<String, SettingsPresentation> _modes= field mutated with =setState=; ✓
+  =grep -rn 'encodePresentationPrefs\|decodePresentationPrefs'= over the whole
+  namespace returns only the kit's own tests, the kit's =example/=, and textloom.
+  Both also render into a =ListView=.
+- Two independently-declared =abstract class SettingsStore { Future<AppSettings>
+  load(); Future<void> save(AppSettings); }=: ✓ word-bank
+  =settings_models.dart:318= (quoted in full) and voicelab
+  =settings_providers.dart:492= (quoted).
+- The four-app =main.dart= load preamble and voicelab' *absence* of it: ✓ all
+  six =main.dart= files grepped for =ProviderScope|overrides|await .*load|SettingsStore(|runApp=;
+  voicelab is =runApp(const ProviderScope(child: VoicelabApp()))= at :38 with no
+  pre-load.
+- Theme responsibilities per app, alert-log's *six* appearance
+  providers, ghk's =AppState.lightTheme()/darkTheme()=, word-bank's re-implemented
+  =contrastRatio= / =isDistinguishable= / =contrastingOn=, =NotifPalette extends
+  DeskPalette= with the =type= override, task-board's =AppThemeMode= 7 members:
+  ✓ extracted by a subagent reading each file; signatures quoted from its report.
+- =showDesktopKitAbout= signature and its four callers (netroute_manager
+  =settings_screen.dart:38-43=, ghk =about_screen.dart=, mail-sweep
+  =settings_view.dart:71-87=, alert-log =nav_rail.dart:54-67=): ✓
+  extracted by a subagent; the netroute_manager call site additionally read directly by
+  me in =settings_screen.dart=.
+- voicelab' About fork renders per-library SIL OFL / LGPL / service-terms
+  attribution via a =_AttributionSection=: ✓ subagent read =about_dialog.dart=
+  (221).
+- word-bank's About uses Flutter's own =showAboutDialog=: ✓ subagent read
+  =lib/widgets/about.dart= (27).
+- Status widget constructors (=LedIndicator=, both =ConnectionBanner=s,
+  =StatusBadge=, =StatusChip=, =ServiceStatusCard=, =UpdateBanner=,
+  =RestartBanner=, =StateStrip=, task-board's =LedIndicator=, =AppNavRail=): ✓
+  extracted verbatim by a subagent. Both =ConnectionBanner=s are =const
+  X({super.key})=.
+- alert-log's =WebSocketClient= (133) with =WsStatus= and the
+  clamped-doubling backoff: ✓ read in full. task-board's (177) with
+  =_initialBackoff * (1 << _reconnectAttempts)= and =_maxReconnectAttempts=: ✓
+  public surface grepped. Set-difference between them: 220 lines (=diff
+  <(sort A) <(sort B) | grep -c '^[<>]'=).
+- ghk =HealthProbe= ("failure IS a normal answer, not an exception") and
+  mountbridge =ServiceStatus=: ✓ both read in full.
+- =host_env.dart= (77) and =host_env_default.dart= — the mandated seam
+  reference: ✓ both read in full. =HostCapability= (16 members),
+  =CapabilityGrade=, =CapabilityStatus=, =HostCapabilities=: ✓
+  =host/capabilities.dart= read.
+- *Zero/one consumer for every host capability in §11.2:* ✓ =grep -rln= over all
+  app trees with =.worktree= excluded, for =window_manager|setWindowFrame|WindowListener=,
+  =StatusNotifier|tray_manager|AppIndicator|sni=, =autostart=, =Inhibit=,
+  =dbus=. The two apparent =sni= hits were verified individually to be the
+  substring =snippet=.
+- Kit packaging: ✓ 23 barrels in =lib/*.dart=; ✓ =pubspec.yaml= dependencies are
+  =flutter=, =material_color_utilities=, =meta=, =path_provider=, =web=.
+
+** Designed, not verified — every proposed signature
+- =AppKitSettings=, =appKitSettingsProvider=, =appKitSettingsWriterProvider=,
+  =AppSettingsCodec<T>=, =AppSettingsController<T>=, =loadAppSettings<T>()=,
+  =ChromeScaffold=, =SettingsCategoriesPage=, =SettingsSpanHost=,
+  =AppearanceScope=, =NavPlacement=, =HealthBanner=, =HealthChip=,
+  =ServiceHealth=, =ServiceHealthState=, =BackoffPolicy=,
+  =ServiceHealthController=, =serviceHealthProvider=, and the proposed tier-1
+  =AboutSection.attribution= / =LibraryAttribution=. **None of these exists.**
+  None has been compiled, analysed or tested. Parameter names and defaults are
+  proposals.
+- The =riverpod-required-guard= (§8.1) and the R1/R2 package rules (§9.2) are
+  proposed; no Makefile target exists.
+- All migration sketches are *sketches*. No app has been migrated and no diff
+  has been produced.
+
+** Estimated / bounded
+- app_kit's own size ("≈650–750 lines") is a design estimate with no code behind
+  it. The ≈1,580 absorbed figure is a sum over *measured* files but a *judged*
+  split of each file into policy-vs-content; the per-region line counts in §2.4
+  are marked "approx" for that reason. Read the absorbed column as an upper
+  bound on what deletion may remove, in the same sense as the census's
+  ~6,600-line settings figure.
+- "Nine of eleven apps hand-roll a shell / 2,181 lines" is carried from
+  [[file:duplication-census.org]] §4, not re-measured; six of the nine are named
+  there with file paths, and I read all six.
+
+** Corrections made to premises in the existing docs
+- *Original (brief + census §4, inventory §5):* the About surfaces are "kit 231,
+  voicelab 221, ghk 50, word-bank 27 — a discoverability finding". *Corrected to:* four apps
+  already call =showDesktopKitAbout=; ghk's 50-line =about_screen.dart= is a
+  host that *calls* the kit rather than a competing implementation; word-bank's 27 lines
+  are Flutter's own =showAboutDialog=, a deliberate choice; the single real fork
+  (voicelab, 221) is a *capability* gap — =AboutSection{title, body, linkUrl}= cannot
+  express per-library structured attribution. *Revealed by:* reading all four
+  call sites. *Consequence:* app_kit gets no About API at all, and the fix
+  relocates to a tier-1 parameter with one consumer, i.e. filed rather than built
+  (§6). This changes a design conclusion, not just a fact.
+- *Original ([[file:framework-subsumption-design.org]] §2):* app_kit provides
+  "=SettingsSchema= — declarative categories over tier-1 =SettingsStore=".
+  *Corrected to:* the category schema already exists in tier 1
+  (=SettingsCategory= + =SettingsCategoryTile= + =SettingsPresentation=) and is
+  already adopted by three apps with an identical =buildSettingsCategories=
+  entry point. What is duplicated is the ~50-line *host* and the *typed store*.
+  *Revealed by:* reading =settings_presentation.dart= and all three
+  =categories.dart= files.
+- *Original (implicit in §2's table):* the five shapes are tier-2 components.
+  *Corrected to:* each shape splits into a tier-1 widget and a tier-2 tail; the
+  chrome model, the banners and the About dialog are all measurably
+  state-agnostic. *Revealed by:* the =AdaptiveLayout= adoption measurement — 10
+  required arguments, zero adopters — which is the same failure the original
+  tiering would repeat.
+
+** Not verified — deliberately
+- That any migration sketch is behaviour-preserving. Several are explicitly not:
+  the voicelab/word-bank theme migration changes the preset set (=FlexColorScheme= names →
+  =kThemePresets=), and task-board's =AppThemeMode= → =AppearanceSettings=
+  mapping loses the distinction between a mode and a colour choice. Invariant I4
+  applies: name the delta before merging.
+- Any runtime behaviour. Nothing here has been run. =ui/pkg/app_kit= does not
+  exist.
+- Whether tier-1 =chrome/= promotion leaves textloom's tests green. The superset
+  relation is textual; only running textloom's suite settles it, and that is the
+  sibling agent's territory.
+- The Riverpod 3 API surface for =Notifier= / =NotifierProvider= /
+  =NotifierProviderFamily= as spelled above. The family is on hand-written
+  providers with zero codegen (verified in the subsumption design), and
+  task-board's =ThemeModeNotifier extends Notifier<AppThemeMode>= is the
+  in-repo precedent I patterned on — but the exact 3.x names for the family
+  variant were not checked against the package.
+
+* Glossary
+- tail :: the provider + persistence + hydration wiring a controlled tier-1
+  widget needs before an app can use it. app_kit is tails.
+- =AppKitSettings= :: the three-member mixin an app's own settings model
+  implements so app_kit can read =navPlacement=, =presentationPrefs= and
+  =appearance= without owning the model.
+- chrome model :: =ChromeAction= + =ChromeEntry= + =ChromeTier= + =ActionStrip= —
+  one ordered list rendered in three placements, partitioned strip/drawer by
+  measured tier. Originated in textloom, superset in voicelab, proposed for tier 1.
+- measured extent :: collapsing on =entries × thickness= against the room the
+  strip actually got, rather than on a width bucket. Correct for a vertical rail,
+  where width buckets do not apply.
+- required-argument bar :: the §7.1 admission criterion — an app_kit API must
+  cost fewer required arguments than the hand-rolled alternative costs lines.
+- riverpod-required guard :: the inverse of tier 1's =deps-guard=; every app_kit
+  source file must import =flutter_riverpod=, which is what makes a leaf widget
+  mechanically inadmissible (§8.1).
+- package DAG (R1/R2) :: the proposed replacement for "three tiers" — N packages,
+  no package depending on a state-requiring package unless it requires one too,
+  no cycles.
+
+* Index
+- shape 1, app shell → [[*2. Shape 1 — app shell / chrome]]
+- shape 2, settings → [[*3. Shape 2 — settings]]
+- shape 3, theme → [[*4. Shape 3 — theme entry point]]
+- shape 4, status → [[*5. Shape 4 — status / connection]]
+- shape 5, about → [[*6. Shape 5 — about / version: app_kit gets nothing]]
+- discoverability → [[*7. The discoverability position]]
+- anti-flatness guard → [[*8. How this avoids becoming a second flat kit]]
+- tiering disagreement → [[*9. Where the existing tiering is wrong]]
+- exclusions → [[*11. What is deliberately left out]]
+
+* Cross-References
+- The five shapes this design closes: [[file:flutter-app-inventory.org]]
+- Measured forks and the STALE/AHEAD/ORPHAN/ABSENT taxonomy:
+  [[file:duplication-census.org]]
+- The tiers, admission rules and tranche order this design refines (and disputes
+  in §9): [[file:framework-subsumption-design.org]]
+- DRY-as-decisions and the seam convention:
+  [[file:../../docs/architecture-and-process-design.org]]
+- Session trace:
+  [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Prior art, do not re-derive:
+  [[file:~/go/src/github.com/davidwalter0/task-board/docs/desktop-kit-gap-evaluation.org]]
+
+* Footnotes
+
+[fn:twoconsumer] The two-consumer rule is applied to this document itself: §11
+is longer than §2–§6 combined, and that ratio is the intended one. The family's
+problem is not too little shared code — the census is a record of shared code
+being ignored — so the discipline that matters most here is the one that keeps
+APIs out.

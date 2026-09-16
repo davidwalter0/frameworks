@@ -1,0 +1,329 @@
+:PROPERTIES:
+:ID:       frameworks-communication-architecture-analysis
+:END:
+#+title: Communication architecture — full analysis
+#+date: 2026-07-30
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-30
+:END:
+
+** Status
+Capstone synthesis of the transport / concurrency / paging / format analysis.
+Stands alone; the working documents are
+[[file:transport-design-surface.org]] and
+[[file:flutter-concurrency-and-paging.org]].
+
+** Completed
+- [X] Five-axis framing; function taxonomy; transport matrix
+- [X] Parallelism axes and the measured client-side constraint
+- [X] Three laziness boundaries with measured alignment
+- [X] Format and parser-placement decisions
+- [X] Waterworks (=flowq=) recognised as substantial prior art — corrects an earlier
+  undercount of mine by 17x
+
+** Next Steps
+- [ ] The three open decisions in §9
+- [ ] Frame-time measurement before any client work (§8.1)
+
+* 1. What was analysed, and with what
+
+Eleven Flutter/Go repos plus the wider namespace (62 modules with a =go.mod=).
+Go questions were answered with the =ast= MCP deep tier — =symbols-inventory=,
+=callers-of=, =references=, =dead-code=, =list-interfaces=, =implementors=. Dart
+questions used =ast__outline= where it worked and text search where it did not,
+with the distinction recorded per claim.
+
+*Instrument caveat carried forward:* =ast__outline= silently truncates large
+Dart files (verified: 1,667 lines / 21 classes reported as 2) and returns null
+for function-level files — filed against mcp-ast as =1d758046= / =ed032510=.
+Dart-side declaration counts are therefore soft; file inventories and LOC, which
+come from =find=/=wc=, are not.
+
+* 2. The corrections this analysis produced
+
+Recorded first because several reverse earlier claims of mine.
+
+| claim | was | is | how |
+|-------+-----+----+-----|
+| netroute transports | websocket + prometheus | *neither exists* — absent from go.mod and all imports | go.mod + import grep |
+| Avahi | D-Bus | *subprocess* — =exec.Command("avahi-publish-service")=, its own comment says "no dbus client dependency" | source read |
+| gatehub-kit GraphQL | a transport | *unimplemented* — =kit_surface.go:31= returns "requires M2 graph — not yet available" | source read |
+| =observe/= consumers | 2 (I "flipped" to this) | *1* — every middleware constructor has one production caller | =ast__callers-of= |
+| =SpanHost= required args | 18 | *6* — my figure summed four classes in one file | Read |
+| *=flowq= size* | *409 LOC NATS wrapper* | *7,139 LOC platform* — I measured four files of one package | =find= + =wc= |
+
+The last is the largest and is corrected in §7.
+
+* 3. Five axes, not one question
+
+I initially answered "which wire format" as though it were the whole decision.
+
+| axis | asks | failure when ignored |
+|------+------+----------------------|
+| *form* | how are bytes encoded? | wrong encoding; needless dependency |
+| *function* | what must the channel *do*? | a transport that cannot express the interaction |
+| *DRY reuse* | how much code is shared? | N implementations of reconnect |
+| *decoupling* | can the ends evolve independently? | lockstep releases; silent drift |
+| *standardization* | how many ways of doing one thing? | no shared tooling; every pair re-decides |
+
+*The tension that decides everything:* standardization and decoupling *conflict*
+when you standardize on FORM — one wire everywhere means every consumer takes
+that dependency. They *align* when you standardize on FUNCTION — "every client
+reconnects with the same policy" costs no shared dependency.
+
+*And DRY reuse follows function:* the measured plumbing ratio is *154 shared
+lines against 6,379 forked* across seven apps — the worst of any capability
+measured — and those 6,379 lines are connect, reconnect, backoff, health,
+cancellation and lifecycle, not encoding. A gomobile =MethodChannel= and a D-Bus
+proxy differ completely in form and have *identical* plumbing problems.
+
+*D-Bus is a function, not a form.* It is the only option that lets an unrelated
+application discover and call a service, integrate with host services, and act as
+a continuity point across restarts. Comparing it to JSON-RPC as an alternative
+encoding was a category error.
+
+* 4. Function taxonomy and transport fit
+
+F1 call/response · F2 server streaming · F3 *bidirectional + caller callback* ·
+F4 notification · F5 pub/sub fan-out · F6 durable queue/replay · F7 cross-app
+reach · F8 activation/discovery · F9 in-process fan-out.
+
+| function | stdio JSON-RPC | gRPC | D-Bus | NATS | MethodChannel |
+|----------+----------------+------+-------+------+---------------|
+| F1 | ✓ | ✓ | ✓ | ~ | ✓ |
+| F2 | ~ | *✓* | ~ | ✓ | ~ |
+| *F3* | ~ (LSP proves it) | *✓* | ✓ | ~ | ✗ |
+| F5 | ✗ | ✗ | ~ | *✓* | ✗ |
+| F6 | ✗ | ✗ | ✗ | *✓* | ✗ |
+| F7 | ✗ | ~ | *✓* | ✓ | ✗ |
+| F8 | ✗ | ✗ | *✓* | ~ | ✗ |
+| schema | ✗ | *✓* | *✓* | ✗ (see §7) | ✗ |
+| dependency weight | *none* | protobuf+grpc | session bus | broker | Flutter-only |
+
+*No single transport covers F1–F9*, so any "standardize on one" answer fails on
+function grounds before cost is considered. *F3 is a hard requirement* — the
+lisp compiler/runtime needs caller callback interleaved with call/response, which
+eliminates any request/response-only design.
+
+* 5. Parallelism — the client is the bottleneck
+
+Seven axes: multiplexing, head-of-line blocking, backpressure, *client decode
+placement*, server request parallelism, ordering, consumer fan-out.
+
+*P2 head-of-line blocking is the sleeper.* stdio is a single byte stream, so a
+large response stalls everything behind it. Four consumers use JSON-RPC over
+stdio. This is the strongest technical argument for gRPC that has nothing to do
+with schemas.
+
+*P4 dominates, and it inverts the transport argument.* Isolate/=compute()= usage:
+
+| mountbridge 0/26 · alert-log 0/60 · ghk_dashboard 0/36 · mail-sweep 0/32 · netroute_manager 0/22 · task-board 0/39 · *kit 0/121* · word-bank 3/56 · textloom 2/75 · voicelab 1/77 |
+
+*6 of 544 Dart files.* Essentially every payload is deserialized on the UI
+isolate. Dart's event loop is single-threaded per isolate, so a large decode
+janks frames *regardless of how well the wire multiplexes*. **Transport-level
+parallelism buys nothing while the client processes serially on the thread that
+also paints.**
+
+The asymmetry is the finding: *Go serves concurrency almost for free; the Flutter
+client cannot consume it.* Backpressure is effectively absent — one file handles
+it explicitly (=fs-relay/pkg/scheduler/runner.go=), with =fs-relay/pkg/channels= the
+other good citizen for documenting drop-on-full as a requirement.
+
+* 6. Three laziness boundaries — and nobody has all three
+
+B1 storage · B2 transport · B3 UI. *Laziness is only as good as its eagerest
+boundary.*
+
+| app | B1 | B2 | B3 | aligned |
+|-----+----+----+----+---------|
+| mountbridge | *✓ pin model* | ✗ | ✗ | B1 only |
+| alert-log | ✗ *no limit/offset/cursor anywhere* | ✗ | ~ cosmetic | *none* |
+
+*The verified anti-pattern:* =PaginatedSortableTable= is 981 lines and pages —
+for display. Its data arrives as a materialized =List= and it renders
+=itemCount: items.length=. The Go side has no paging primitive at all. So the
+full set crosses the wire, decodes on the UI isolate, materializes, *then* gets
+paginated. Every cost the paging was meant to avoid is already paid.
+
+*mountbridge solved B1 and wrote the reference:* =internal/pin/registry.go:138=,
+"the 'lazy' pin mode: the file is marked … without downloading its content", with
+explicit and implicit pools. That generalises directly — directory entries vs
+file bytes, log index vs body, mail headers vs message.
+
+*The paging contract: Go decides, the client hints.* Each side knows half — the
+client knows viewport, memory and decode budget; the server knows record size,
+whether the cursor is index-backed, and what the next page costs. Request carries
+advisory hints (=want_items=, =max_bytes=, =decode_offisolate=, =intent=);
+response carries an =applied= block saying what the server actually did, with
+=capped= and =reason=. =total= may be =unknown= — requiring an exact count forces
+=COUNT(*)= and is the commonest way a paging API degrades into a scan.
+
+* 7. Waterworks (=flowq=) — substantial prior art, and my undercount
+
+*I previously described =flowq= as "a 409-LOC NATS abstraction". That was four files
+of one package. The repo is 7,139 LOC and is a distributed job/queue platform.*
+A rename from =flowq= to =waterworks= is in progress — the vocabulary has already
+landed throughout; the module path has not.
+
+| package | LOC | role (from its own doc comment) |
+|---------+-----+---------------------------------|
+| =cistern= | 1,569 | BadgerDB-backed Store |
+| =sluice= | 904 | priority + timestamp scheduler |
+| =chaos= | 823 | in-process chaos-test harness |
+| =tap= | 792 | worker runtime and public SDK |
+| =headworks= | 771 | cross-cluster federation controller |
+| =waterworks= | 757 | NATS JetStream broker layer |
+| =observability= | 753 | thin metrics layer on the OTel API |
+| =wwctl= | 383 | control |
+| =failure= | 131 | canonical failure-mode taxonomy |
+| =job= | 106 | dead-letter types |
+| =config= | 69 | |
+| =wireproto= | 36 | NATS message envelope + encoding |
+| cmds | 1,025 | =ww=, =waterworks=, =cistern-bench=, =headworks=, =sluice=, =tap= |
+
+The metaphor is coherent and load-bearing: *headworks* (intake/federation) →
+*sluice* (flow control/scheduling) → *cistern* (storage) → *tap* (consumption),
+all carried by the *waterworks* (broker). Commits are phased (P7 federation, P8 CLI
++ Helm + k3d, P9 failure/recovery hardening with a chaos harness).
+
+** 7.1 Why this changes the wire-format conclusion
+
+=pkg/wireproto= (36 lines) already does what I said the family lacked:
+
+#+begin_src go
+// Package wireproto defines the NATS message envelope and encoding for
+// transit of jobs between Waterworks components. Phase 4 will add a
+// protobuf encoding option; for now encoding/json is used.
+
+const SchemaVersion = "1"   // Increment when the Envelope layout changes
+                            // in a backwards-incompatible way.
+
+type Envelope struct {
+    SchemaVersion string  `json:"v"`
+    Job           job.Job `json:"job"`
+}
+#+end_src
+
+That is a *versioned envelope with an explicit forward-compatibility policy*
+("allows consumers to reject or adapt messages from future wire format
+versions") and a *planned migration path to a binary encoding*. I argued
+JSON-RPC's weakness is having no schema and no versioning story; Waterworks has
+already designed the answer — JSON now, protobuf later, version negotiated in
+band.
+
+Likewise =pkg/failure= is a "canonical failure-mode taxonomy", which is precisely
+the error-model gap I flagged for JSON-RPC, and =pkg/observability= is an OTel
+metrics layer, which bears on the =observe/= question in
+[[file:tiers-vs-packages-recommendation.org]].
+
+** 7.2 What follows
+
+- *The queue tier is not greenfield.* Tier C of the transport design should be
+  evaluated against Waterworks, not designed fresh. Per the standing rule this is
+  prior art to *evaluate*, not a verdict — but it is a far stronger candidate
+  than a 409-line wrapper would have been.
+- *The envelope pattern generalises beyond NATS.* A =SchemaVersion= field plus a
+  documented reject-or-adapt policy is transport-independent and would serve the
+  stdio JSON-RPC pairs equally.
+- *The rename is in flight.* Module path is still =github.com/davidwalter0/flowq=
+  while every package, command and doc comment says Waterworks. Nothing outside the
+  repo requires it yet, so the module rename is cheap *now* and gets more
+  expensive with each consumer. Worth completing before it is adopted, not after.
+
+* 8. The target surface
+
+*Tier A — plumbing contract (standardize hard, form-independent).* Connect,
+reconnect, backoff, health, cancellation, correlation, lifecycle — plus, from
+§5: a concurrency policy stated once, off-isolate decode as the *default* path
+above a threshold, and expressible backpressure. This is where the 6,379 forked
+lines go. =backoff= already exists as a module.
+
+*Tier B — form by function.* stdio JSON-RPC for private F1/F4 sidecars ·
+peer-mode JSON-RPC or gRPC bidi for F3 · gRPC where streaming, schema, or *P2
+head-of-line* matter · D-Bus for F7/F8 · MethodChannel for mobile.
+
+*Tier C — queue/stream.* D-Bus and NATS are not alternatives: D-Bus is one host,
+session-scoped, ephemeral signals, for desktop and host-service integration; NATS
+is networked, durable, replayable. Evaluate Waterworks here.
+
+*Tier D — in-process.* Three implementations of one idea today
+(=fs-relay/pkg/channels= 132, =netroute/events= 264,
+=fleet-sched/pkg/events= 55). Clean three-consumer consolidation,
+independent of everything else.
+
+** 8.1 Format and parser placement
+
+*On local IPC, compression is usually a net loss* — a pipe is not
+bandwidth-limited, so gzip spends CPU both ends to save transfer time that was
+already ~zero. Compress on the network tier only.
+
+Format by what the client *does*: opaque bytes → raw blob + =TransferableTypedData=,
+never parsed · large scrolled collection → zero-copy random access, decode per
+visible row · transform-then-display → structured, decode once · small control →
+JSON.
+
+*Parser placement — the asymmetry is the argument.* Dart's weakness is CPU-bound
+parsing on one isolate; Go's strength is exactly that.
+(a) *Go pre-digests* — the daemon already exists; have it emit a compact
+display-shaped buffer so Dart never sees the complex format. No new mechanism,
+biggest win, *removes* parsing rather than relocating it.
+(b) *=dart:ffi= + Go =-buildmode=c-shared=* — when the parse must be in-process.
+The lisp runtime likely needs this; a reader in a daemon turns every keystroke
+into a round trip.
+(c) *gomobile* — mobile only, proven twice here (voicelab, notekeep).
+
+* 9. Open decisions
+
+1. *F3's shape for the lisp runtime* — does the callee originate calls (true peer
+   mode, as LSP does) or is long-lived server streaming with client cancellation
+   enough? Peer-mode JSON-RPC covers the first with zero dependencies; gRPC bidi
+   covers it with a schema. *Most changes Tier B's default.*
+2. *Waterworks: adopt, extract, or leave in place* — 7,139 LOC, two NATS consumers
+   in the namespace, mid-rename. Complete the rename first either way.
+3. *Wire-format standardization scope* — the =wireproto= envelope pattern is
+   transport-independent. Adopt it for the stdio pairs, or leave each contract as
+   is?
+
+* 10. Source Verification Notes
+
+** Verified
+- All corrections in §2, each by the instrument named there.
+- Plumbing ratio 154 vs 6,379 with per-repo breakdown; isolate usage 6 of 544 —
+  measured across all Dart clients.
+- alert-log has no =limit=/=offset=/=cursor= in =pkg/api/=,
+  =pkg/sink/=, =pkg/model/=; =paginated_sortable_table.dart:501= renders
+  =itemCount: items.length=.
+- mountbridge pin model — =internal/pin/registry.go= 326 LOC, "lazy pin mode" at
+  line 138.
+- Waterworks package sizes, doc comments and =wireproto= source — read directly.
+  Module path still =github.com/davidwalter0/flowq=; no external consumer.
+- Format survey: flatbuffers in =flowq=; =klauspost/compress= in three repos; =cbor=
+  in three; Dart side =dart:ffi= 2 files, =typed_data= 1, =Uint8List= 3.
+
+** Judgement, not measurement
+- The F1–F9 taxonomy and every ✓/~/✗ capability grade.
+- The B1/B2/B3 framing and the claim that misalignment nullifies laziness.
+- Tier assignments, the hint-and-plan paging shape, and parser-placement ranking.
+
+** Not verified — do not present as findings
+- *That anything currently janks.* No frame timing has been taken anywhere in
+  this family. 6-of-544 is exposure, not an observed defect. *This should be
+  measured before any client work* — mountbridge's file manager against a large
+  directory is the sharpest case.
+- That compression is a net loss on *these* payloads — sound in principle,
+  unbenchmarked here.
+- The zero-copy-vs-=jsonDecode= crossover point.
+- Whether Waterworks is any good. Its structure and doc comments were read; its
+  code was not reviewed.
+- A protobuf discrepancy left unresolved: no =protobuf= line matches any
+  =go.mod=, yet netroute has generated =.pb.go= — presumably transitive via
+  grpc.
+
+* Cross-References
+[[file:transport-design-surface.org]] · [[file:flutter-concurrency-and-paging.org]] ·
+[[file:tiers-vs-packages-recommendation.org]] · todos =8d112c91= (wire format),
+=f0e6927d= (Go/Dart pairing), =4df19bd4= (fs-relay), =0606f5e2= (Dart settings),
+=e0d1d35e= (codegen), =1d758046= / =ed032510= (ast outline defects)

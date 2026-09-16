@@ -1,0 +1,897 @@
+:PROPERTIES:
+:ID:       frameworks-ui-identical-file-verdicts
+:END:
+#+title: Identical-file verdicts — merge or leave, file by file
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Adjudication complete. 18 byte-identical file pairs decided: *12 MERGE* (1,955
+lines) and *6 LEAVE* (1,077 lines). Five verdicts disagree with the starting
+hypothesis; the disagreements are collected in §3 and are the load-bearing
+output of this document.
+
+** Completed
+- [X] Verified both file sets by measurement (Set A 2 pairs, Set B 16 pairs)
+- [X] Established *provenance* for every pair — the finding that reframes the task
+- [X] MERGE/LEAVE + tier + a content-grounded reason for each of the 18
+- [X] The three preview widgets separated, with the discriminator named
+- [X] Two undecidables isolated with the exact fact that would settle each
+- [X] =re_editor= footprint measured (§4.6) and every verdict re-checked with its
+  consumers counted IN — *none moved*. The *drop itself* is a hypothetical, not a
+  decision: see the provenance warning below.
+- [X] elisp engine trajectory checked against the six config-pipeline files
+  (§4.7): no verdict moves; two become robust rather than speculative. Context,
+  not a decision — same provenance caveat.
+
+** PROVENANCE OF §4.6 — resolved, and the orchestrator's first warning was overstated
+
+*Corrected by the orchestrating session, 2026-07-29, after the agent's reply
+below.*
+
+The first version of this warning stated that "no user statement in the session
+authorises it". *That was an over-claim and is withdrawn.* What the orchestrator
+could actually establish was narrower: it sent no such instruction, and no such
+statement was visible in its own context. Concluding from that to a claim about
+the whole session was a negative assertion made with an instrument that cannot
+support it — absence from one participant's context is not absence from the
+session. (The same error the census rules warn about: a grep that finds nothing
+has not established that nothing exists.)
+
+The agent's account is corroborated on every checkable point, so the messages it
+received were in all likelihood genuine and routed directly to it:
+
+| Claim in its reply | Check | Result |
+|--------------------+-------+--------|
+| path is =git.savannah.gnu.org=, not =savannah.org= | =ls= both | only =gnu.org= exists — its correction is right |
+| =emacs/= is upstream GNU, not our code | =git log -1= | =0a714557ebd= "vc-dir: Don't resolve DIR to truename unnecessarily" — upstream |
+| four architecture docs in the parent =docs/= | =wc -l= | =emacs-lisp-engine-architecture= 544, =emacs-ui-architecture= 519, =mcp-ast-coverage-gaps-emacs-corpus= 414, =emacs-architecture-overview= 332 |
+
+*Operational consequence, worth recording for future waves:* a subagent can
+receive messages the orchestrator never sees. So an agent citing an instruction
+the orchestrator did not send is *not* thereby confabulating, and the
+orchestrator must not treat its own context as the session's full record.
+
+*What still holds from the warning, on different grounds.* The =re_editor= drop
+remains unexecuted here — not because its provenance is doubtful, but because
+executing it means deleting files from =ui-kit-private/example/= and editing
+that repo's =pubspec.yaml=. That is a destructive change to a *different, shared*
+repo whose copy is the ancestor of textloom, made while other work is in flight. It
+needs its own confirmation and its own gate, not a side effect of an adjudication
+document. §4.6 stays labelled hypothetical *for this document's purposes*.
+
+*And the reason the dispute cost nothing:* every verdict was re-checked with the
+=re_editor= consumers counted **in**, and none moved. That is the right test, and
+it is why the disagreement is recorded rather than litigated.
+
+What *is* verified, independently, and safe to rely on:
+
+| Repo | =re_editor= | =re_highlight= | Source imports |
+|------+-------------+----------------+----------------|
+| =example/= | =^0.9.0= | =any= | 8 files |
+| =textloom= | *absent* | =any= | *none — dead dependency* |
+| =notekeep= (decommissioning) | =^0.9.0= | — | =lib/src/poc/= |
+| kit, voicelab, word-bank | absent | absent | — |
+
+Also verified as a genuine, independent finding: *textloom declares =re_highlight=
+and imports it nowhere* — a dead dependency inherited by the fork from
+=example/=. That one needs no decision from anybody; it is unambiguous cleanup.
+
+The two verdicts §4.6 claims to strengthen (=org_tree_preview= LEAVE,
+=org_header_theme= MERGE) must therefore be re-read on their *unconditional*
+grounds, which the sections themselves supply. Neither depends on the drop
+happening: =org_header_theme= keeps =emacs_buffer_editor=, =org_editor_page= and
+=editor_settings_pane= as importers regardless, and =org_tree_preview='s textloom
+copy is test-only regardless.
+
+*** Response from the adjudicating agent — what it observed, and what it changed
+
+Recorded because a reader needs to know where the §4.6 / §4.7 text came from, and
+because silently deleting the attribution would substitute one inaccuracy for
+another. Stated as observation, not as a counter-claim:
+
+- Three messages reached this agent mid-turn, each surfaced with the harness
+  framing "The user sent a new message while you were working": (1) "for now we
+  can drop re_editor tools / it's not used in any of the current tools except
+  notekeep (decomm adjacent)", (2) a pointer to an elisp
+  compiler/interpreter/tooling option under =~/go/src/git.savannah.org/emacs= "or
+  the parent project dir", (3) "Still room to grow the tool". §4.6 and §4.7 were
+  written in response to (1)–(3).
+- This agent cannot verify the provenance of harness-surfaced text, and the
+  orchestrating session's account differs. *That conflict is not resolvable from
+  inside this document and is not resolved here.* Whoever reconciles it should
+  treat the quoted strings above as the evidence of what was acted on.
+- *The correction is accepted on the substance, which is the part that matters:*
+  a drop is not this agent's to declare, "better overall" is an evaluation no
+  measurement here supports, and a verdicts document must not present either as
+  settled. §4.6 and §4.7 are now framed as hypotheticals, the §2 and §4.3 cells
+  that leaned on the drop are restated unconditionally, and every verdict was
+  re-checked with the =re_editor= consumers counted *in*. *None moved* — which is
+  the fact that makes the dispute harmless for this document's conclusions.
+- What is *kept*, because it is measured and decision-independent: the footprint
+  table above, the two files' verbatim self-descriptions, the =_HeadingBoxPainter=
+  line references, and the textloom dead-dependency finding.
+
+** Next Steps
+- [ ] Tranche 3b partitions the byte-identical bucket using the table in §2
+- [ ] File the four *reconcile-against-existing-kit-code* items (§5) — these are
+  not merges and must not be scheduled as merges
+- [ ] Correct =framework-subsumption-design.org= §2: 18 diverged files, not 15 (§6)
+- [ ] Drop textloom's *dead* =re_highlight= dependency — unconditional, no decision needed
+- [ ] The wider =re_editor= drop is *plausibly user-directed* (see the corrected
+  provenance section) but touches =ui-kit-private/example/= — a shared repo,
+  destructively. Confirm and gate it separately; do not fold it into a tranche.
+- [ ] Read =git.savannah.gnu.org/docs/emacs-lisp-engine-architecture.org= (544
+  lines, status Complete 2026-07-26) before any =elisp_eval= work. It scopes a
+  port surface in tiers 0–4, states obligations rather than a design, and flags
+  an unresolved fork — *interpreter vs translator* — that the kit's deliberately
+  tiny 494-line =elisp_eval= sits underneath.
+
+* 1. The finding that reframes the question
+
+The governing principle
+([[file:../../docs/architecture-and-process-design.org]] §1, Direction 1) is
+that byte-identical text can be *coincidence* — two independent minimal
+implementations of one small idea — and that merging coincidence manufactures a
+coupling which did not exist. That principle is correct and it is the right
+test to apply. Applying it here produces an unexpected result:
+
+*Not one of these 18 pairs is coincidental identity. Every pair has a known
+copy direction and a known date.*
+
+| Set | Provenance | Evidence |
+|-----+------------+----------|
+| A (kit ↔ voicelab) | voicelab wrote it; the kit *promoted* it 2026-07-02 | kit commit =c3932e4= "feat(kana): promote romaji/kana engine + mark/text-motions from voicelab"; voicelab file dates to =af6f7a5= 2026-06-07 |
+| B (example/ ↔ textloom) | a single fork event, 2026-07-19 | textloom root commit =bd6fd4f= "eedit: fork the example gallery into a standalone lightweight editor" |
+
+Two consequences, and both change how the verdicts should be read.
+
+*First, "merging creates a coupling that did not exist" does not apply to any
+pair in this set.* The coupling already exists — one file IS the other — and it
+is already decaying: of the 34 filenames =example/lib= and =textloom/lib= share,
+16 are identical and *18 have diverged in ten days*, textloom larger in all 18
+(measured; see §6). Identity here is not convergence, it is a snapshot with a
+timestamp.
+
+*Second, LEAVE therefore never means "keep two live copies".* For a fork there
+is no independent derivation to protect, so every LEAVE below means one of:
+
+- *LEAVE (one owner)* — the file is demo/gallery material or app-local wiring;
+  exactly one side keeps it, and the other side's copy is dead or dies with its
+  page.
+- *LEAVE (retire against existing)* — the decision is *already owned* by tier 1
+  under a different name, so the app copies are the duplication and the fix is
+  deletion, not promotion. Promoting would install a second implementation in
+  the same package.
+
+Reading LEAVE as "leave both alone" would preserve precisely the drift the kit's
+own Makefile already condemned when it dropped the pre-split =eedit/= subtree:
+"the copy that stayed behind was never removed and had drifted badly. Checking a
+stale duplicate proved nothing and hid real drift."
+
+*Where the principle DOES bite in this family* is the case the census cannot
+see: identical text that encodes a *composition* each app must own. There is
+exactly one such file here — =keymap_setup.dart= (§3.5) — and the reason it must
+stay forked is not the reason the hypothesis gave.
+
+* 2. Verdicts
+
+Sides: =kit= = =ui-kit-private/lib/src=, =voicelab= =
+=voicelab/ui/voicelab-ui/lib=, =ex= = =ui-kit-private/example/lib=,
+=xid= = =textloom/lib=.
+
+| File | Lines | Sides | Verdict | Reason (short) |
+|------+-------+-------+---------+----------------|
+| =keymap/mark_state.dart= | 78 | kit ↔ voicelab | *MERGE tier 1* (already there) | Promoted from voicelab 2026-07-02 and already exported; voicelab imports the same barrel in 7 files. An unfinished retire, not duplication. |
+| =keymap/text_motions.dart= | 125 | kit ↔ voicelab | *MERGE tier 1* (already there) | Same promotion, same unfinished retire. One notion of word/line motion; its one judgement (non-ASCII is a word char) must have one home. |
+| =x11_colors.dart= | 542 | ex ↔ xid | *MERGE tier 1* | The kit owns the producer (=HarvestedFace=) and the mapper (=faceToThemeSlot=) but has *no* colour-name resolver — both apps filled the same hole. Also encodes a policy (5 CSS-vs-raw-X11 deviations) that must be answered identically. |
+| =org_header_theme.dart= | 338 | ex ↔ xid | *MERGE tier 1, carve-out* | Palette type, extractor, bevel/box, bullet styles and the 5 named theme palettes are library code + reference data over kit types, live on both sides. Carve out =kDavidOrgHeaderConfig= / =davidOrgPaletteFromConfig()= — one person's =custom-set-faces= is fixture text. |
+| =anthy_ime_demo.dart= | 291 | ex ↔ xid | *LEAVE (one owner: the gallery)* | =_DemoAnthy= is a scripted fake =anthy-agent= existing "so the gallery works with no anthy-agent installed"; its own doc says it is "not a model of real Anthy resegmentation". In textloom it is reachable only from a test. |
+| =org_fold_example/org_fold_example.dart= | 239 | ex ↔ xid | *LEAVE (as written)* | =const OrgFoldExample()= takes no value and emits no =onChanged=; it parses a hardcoded =kSampleOrg= in =initState=. Fails tier 1's admission rule by construction, and its header states it exists to *disagree* with the kit's own =Foldable= glyphs. |
+| =org_fold_example/org_fold_model.dart= | 214 | ex ↔ xid | *LEAVE (retire against existing)* | The kit already has =List<OrgNode> parseOrgOutline(String)= — the *same function name* — plus =OrgFold.headings()=. Promoting this installs a second =parseOrgOutline= and a third outline node type in one package. |
+| =emacs_help.dart= | 202 | ex ↔ xid | *MERGE tier 1, reconcile* | Pure functions of =(KeymapConfig, KeymapRegistry, KeymapMode) → AlertDialog=, no app content. But the kit already ships =keymap_help.dart= (192 lines, apps hand-list bindings); merge must *replace/absorb* it, not sit beside it, or there are three. |
+| =emacs_face_theme.dart= | 176 | ex ↔ xid | *MERGE tier 1, prerequisite* | One decision — where a face's colour comes from, config verbatim or =faceToThemeSlot= — over kit types; 6 live consumers in textloom. Prerequisite: =faceColor= / =faceTextStyle= must be promoted with it (they live in the *diverged* =emacs_seed_bridge.dart=). |
+| =widgets/org_header_preview.dart= | 177 | ex ↔ xid | *LEAVE (one live consumer)* | Library-shaped, but reachable in textloom only from =test/org_header_preview_test.dart= — textloom has no =editor_shell_page=. One real consumer = that project's code. |
+| =widgets/faces_preview.dart= | 135 | ex ↔ xid | *MERGE tier 1* | The one preview that is genuinely library code: parameterised (=faceTheme=, =language=, optional =sample=) and live on *both* sides — textloom's =editor_settings_pane= uses it for a real settings feature. |
+| =widgets/org_tree_preview.dart= | 123 | ex ↔ xid | *LEAVE (one live consumer)* | Same shape as the header preview and the same answer: textloom's copy is test-only, and all three live consumers are in =example/=. Unconditional; §4.6 notes that two of those three would also fall away *if* =re_editor= were dropped, which the verdict does not need. |
+| =emacs_syntax_samples.dart= | 83 | ex ↔ xid | *MERGE tier 1* | A =Map<SyntaxLanguage, String>= keyed on the *kit's* enum: add a language to the kit and every copy must gain an entry or its preview silently renders blank. Forced lockstep on a kit-owned decision — and the drift already happened once (§3.4). |
+| =widgets/occur_dialog.dart= | 89 | ex ↔ xid | *MERGE tier 1* | Presentation-only, =matches= + =onJump= — literally tier 1's rule. Completes a kit surface: the kit owns =OccurIntent= but neither the match type nor the dialog, so both apps re-declared =OccurMatch=. A duplicated *type* is a DRY violation on its own. |
+| =widgets/tangle_preview_dialog.dart= | 79 | ex ↔ xid | *MERGE tier 1* | It is the view of a kit type — it imports =TangledFile= from =desktop_kit_org=. Change what a dry-run reports and both copies must change. |
+| =minibuffer_bridge.dart= | 60 | ex ↔ xid | *MERGE tier 1* | The *protocol* between a windowed editor and its frame (one echo area per frame, ownership-guarded publish/release). Merging the contract is the cheapest first step on the 4,115-vs-5,949-line =emacs_buffer_editor= fork: the interface can converge long before the implementation. |
+| =widgets/babel_confirm_dialog.dart= | 48 | ex ↔ xid | *MERGE tier 1* | Implements a named Emacs contract (=org-confirm-babel-evaluate= / =y-or-n-p=) guarding code execution through the kit's org support binary. A safety gate on a kit-owned capability; an app that forgets it executes without asking. |
+| =keymap_setup.dart= | 33 | ex ↔ xid | *LEAVE (app composition)* | Right verdict, wrong reason in the hypothesis: it contains *no binding choices at all*. It is three one-line compositions, and the composition is what genuinely varies across the family (measured, §3.5). Hoisting it would make the kit's deliberately opt-in IME module on-by-default. |
+
+*Totals:* 12 MERGE / 1,955 lines · 6 LEAVE / 1,077 lines. Every MERGE lands in
+*tier 1*. Nothing in this set is a tier-2 candidate — see §4.
+
+* 3. Where I disagree with the starting hypothesis
+
+This is the section to read if you read only one. Five disagreements, in
+descending order of how much they change the plan.
+
+** 3.1 =org_fold_model.dart= — MERGE tier 1 → *LEAVE (retire against existing)*
+
+The hypothesis reads it as "library code, nothing gallery-specific", and on
+content alone that is right: pure Dart, no Flutter, a parser and a fold model.
+The hypothesis's own doubt was about the directory name. The directory name is
+*not* the deciding fact, and the real one is stronger:
+
+The kit already contains, in =lib/src/org_edit/org_outline.dart=:
+
+: List<OrgNode> parseOrgOutline(String text)
+
+=org_fold_model.dart= defines:
+
+: List<OrgHeadingNode> parseOrgOutline(List<String> lines)
+
+*Same function name, same job, different node type* — plus =OrgFold.headings()=
+in =lib/src/org_edit/org_fold.dart=, a third answer to "what is an org
+heading", which both apps' =emacs_buffer_editor= already uses heavily.
+Promoting this file puts two =parseOrgOutline= functions and a third outline
+node type into one package. The decision is already owned by tier 1; the app
+copies *are* the duplication. This is a delete-and-adopt, not a merge, and
+scheduling it as a merge would make the kit worse.
+
+** 3.2 =org_fold_example.dart= — MERGE tier 1 → *LEAVE (as written)*
+
+The hypothesis flagged the =example/= directory name as the counter-argument.
+The directory name is a weak signal (=org_fold_example= is live in *both* apps'
+settings "Folding" category — it is not dead scaffolding). The strong signal is
+the widget's *signature*:
+
+: const OrgFoldExample()      // no value in, no onChanged out
+
+It parses a hardcoded =kSampleOrg= in =initState=. Tier 1's admission rule —
+"takes its state as =value= and emits =onChanged=" — is failed by construction,
+not by accident. And the file's own header says it exists to prefer "notekeep's ▸
+(collapsed) / ▾ (expanded) Unicode triangle glyphs … truer to the Emacs
+org-mode look than desktop_kit's chevron-based =Foldable=" — i.e. it encodes a
+*taste disagreement with a kit widget*. Merging it puts both opinions in the
+kit.
+
+*The fact that would flip this:* refactor it to =OrgFoldOutline({required String
+text})= and move the sample out to a shared fixture. Then it is the same shape
+as =faces_preview= and belongs in tier 1 for the same reason. As written, it is
+not mergeable — and that distinction matters, because "merge after a refactor"
+and "merge" are different amounts of work sitting in different tranches.
+
+** 3.3 =emacs_help.dart= — a merge that must *reconcile*, not *add*
+
+Not in the hypothesis, and the most likely way this migration quietly gets
+worse. The kit already ships a keymap help dialog:
+=lib/src/keymap/keymap_help.dart=, 192 lines, "Generalised from notekeep's
+=speed_help.dart=", data-driven — *each app hands it groups*.
+=emacs_help.dart= (202 lines) does the better thing: it derives the groups from
+the live =KeymapConfig= + =KeymapRegistry=, so a rebound key is reflected
+without the app maintaining a parallel list.
+
+Both are right about their own goal, and both are =describe-bindings=. Copying
+=emacs_help.dart= into tier 1 alongside =keymap_help.dart= produces *three*
+implementations of one dialog — the =about_dialog= discoverability failure the
+census already recorded, repeated inside the fix for it. Verdict stands at MERGE
+tier 1; the exit criterion must name =keymap_help.dart= as absorbed or deleted.
+
+** 3.4 =emacs_syntax_samples.dart= — LEAVE (fixture) → *MERGE tier 1*
+
+The hypothesis is that this is demo fixture content, and half of that is true —
+it *is* content: four short source snippets. But apply the test rather than the
+category. The file's payload is:
+
+: final Map<SyntaxLanguage, String> kSyntaxSamples = { ... }
+
+keyed on =SyntaxLanguage=, which the *kit* owns (=desktop_kit_syntax=). Add a
+language to the kit and every copy of this map must gain an entry or its preview
+silently renders blank for the new language. "If this decision changes, must
+both change?" — yes, and *because the kit changed*. That is the merge test
+passing, on content.
+
+It is not a hypothetical. =textloom/lib/widgets/editor_settings_pane.dart= carries
+this comment, in the file itself:
+
+#+begin_quote
+The canonical =SyntaxLanguage= set — the same one =SyntaxFaces=, =FacesPreview=
+and the re_editor panel speak. go / org / yaml were unreachable while this pane
+offered a locally-invented enum.
+#+end_quote
+
+That is a recorded incident of exactly this drift, in exactly this cluster. It
+also is not gallery-only: textloom reaches =kSyntaxSamples= from its live settings
+pane via =FacesPreview='s default sample.
+
+*Caveat kept honest:* the samples' *taste* (which snippet demonstrates a
+language) is genuinely editorial. The merge should therefore make the map
+overridable per call — which =FacesPreview= already supports with its optional
+=sample= parameter. Shared default, app override; the completeness obligation
+travels with the enum, the taste does not.
+
+** 3.5 =keymap_setup.dart= — LEAVE agreed, but the stated reason is wrong
+
+The hypothesis says "each app's own binding choices". The file contains no
+binding choices. Its entire body is three one-line compositions:
+
+: KeymapRegistry.defaults(); registerKanaActions(registry);
+: withKanaDefaults(KeymapConfig.fromDefaults(registry));
+: kanaTestEffects();
+
+The =ToggleKanaIntent=, the bindable action, the *default Shift-K binding* and
+the transform all live in =desktop_kit_kana_keymap.dart= — the file's own header
+says so. So if bindings were the reason, the kit would already be violating it.
+
+The real reason is the one this exercise was set up to find: *merging would force
+the kit to hold an opinion it deliberately declined.* =desktop_kit_kana_keymap=
+is an **opt-in** module precisely so the core keymap stays IME-free; a shared
+"defaults plus kana defaults" helper makes kana effectively on-by-default for
+whoever calls the convenient thing.
+
+And the composition genuinely varies — measured across the family, not assumed:
+
+| App | Composition |
+|-----+-------------|
+| example / textloom | =defaults= + =registerKanaActions= + =withKanaDefaults= |
+| word-bank | the same *plus* =registerAnthyActions=, inside a Riverpod provider |
+| voicelab | =KeymapRegistry.defaults()= + its own kana overlay (=kanaKeymapRegistry()=) |
+
+Four apps, three compositions. The kit correctly ships the pieces and not the
+assembly. *Separate defect, not a merge:* textloom's production code calls
+=buildExampleRegistry= / =exampleDefaultConfig= (=lib/settings_categories.dart=
+plus 6 test files) — "example"-named functions in a shipped app. That is a
+rename, and it is the kind of artifact that makes a fork legible.
+
+** 3.6 Where I agree, with a stronger reason than the hypothesis gave
+
+- *=mark_state= / =text_motions= → MERGE.* Agreed, and the case is much harder
+  than "one notion of mark/region". These are not two implementations to
+  reconcile: the kit's copy *is* voicelab's file, promoted on 2026-07-02, and it is
+  already exported from =desktop_kit_keymap.dart=, which voicelab already imports in
+  seven places. Its siblings from the same promotion —
+  =editor_intents.dart=, =keymaps.dart= — were correctly converted into
+  re-export shims; these two were not. This is the =task-board= ORPHAN pattern at
+  file granularity: the promotion half ran, the retire half did not. The fix is
+  a 2-line re-export shim per file, and no new shared code at all.
+- *=x11_colors= → MERGE tier 1.* Agreed. But "the X11 colour table is a fact"
+  is the weaker half of the argument, and taken alone it invites the objection
+  in §4.1. The stronger half is that the kit already owns both ends of this
+  pipeline and is missing the middle: =ConfigHarvester= yields
+  =HarvestedFace.attributes['foreground'] == "cornflowerblue"=, =faceToThemeSlot=
+  maps face names to scheme slots, and *nothing in =lib/src= resolves a colour
+  name*. Both apps filled the identical hole in the kit's own harvest path.
+
+* 4. The edge cases, answered
+
+** 4.1 Data rather than code: does "shared fact" beat "nobody should own this"?
+
+*A shared fact still needs an owner, and the owner is whoever owns the pipeline
+that consumes it.* "Nobody should own this" is a real instinct but it argues
+against *duplicating* a fact, not for it — and it dissolves the moment the fact
+stops being purely factual.
+
+=x11_colors.dart= is the case in point, because it is not purely factual. It
+documents five names (=green=, =gray=, =grey=, =maroon=, =purple=) where raw X11
+=rgb.txt= and CSS Color 4 disagree, and it *chooses* CSS. That is a policy. Two
+copies of a policy means the same =.emacs= can render differently in two apps of
+one family — a divergence with no owner to arbitrate it. Merged, the deviation
+has one documented home; forked, it is a coincidence waiting to stop being one.
+
+The mirror case is in the same set: =org_header_theme.dart='s named palettes are
+published theme colours (fact) *and* a per-level assignment the file's own
+verification note calls "an editorial choice, not part of any spec". Fact and
+taste in one file is why that verdict carries a carve-out rather than being
+atomic.
+
+** 4.2 Coincidental identity today, different purpose tomorrow: what happens at
+   the first divergence, merged vs forked?
+
+For =keymap_setup= the asymmetry is decisive. *Forked*, the first divergence
+costs one app a one-line edit and the other nothing — because there is no shared
+thing to negotiate. *Merged*, the first divergence forces a choice between three
+bad moves: add a flag to a shared helper (=withKana=, then =withAnthy=, then
+=withoutKana=), fork it back out (having paid for the merge twice), or let the
+kit's opt-in IME module become the default. The measured evidence that this is
+imminent rather than hypothetical is that it has *already* diverged three ways
+across four apps (§3.5); example↔textloom agree only because one is ten days old
+and copied from the other.
+
+Contrast =text_motions=, where the same question resolves the other way. Its one
+judgement — "treat all non-ASCII as a word char, so M-f over Japanese advances
+sensibly" — will eventually want a real syntax table. *Merged*, that arrives as a
+parameter on one function and every caller benefits. *Forked*, one app gets a
+syntax table and the other keeps a subtly different =M-f=, and nobody notices
+because both are "correct". Same shape of question, opposite answer, and the
+discriminator is whether the divergence is a *per-app choice* (keymap
+composition) or a *refinement of one shared rule* (word boundaries).
+
+** 4.3 The three previews: preview widget = library code, or demo scaffolding?
+
+They do *not* answer the same way, and the discriminator is neither shape nor
+name — all three are read-only, value-in widgets that would pass a code review
+as library code. It is *live consumer count*:
+
+| Preview | Live in =example/= | Live in =textloom= | Verdict |
+|---------+--------------------+-----------------+---------|
+| =faces_preview= | =editor_shell_page=, =editor_settings_pane= | ✓ =widgets/editor_settings_pane.dart= | *MERGE tier 1* |
+| =org_header_preview= | =pages/editor_shell_page.dart= | ✗ test only | LEAVE |
+| =org_tree_preview= | =editor_shell_page=, =org_highlight=, =re_editor_panel= — all three in =example/= | ✗ test only | LEAVE |
+
+Two of the three lost their consumer in the fork: textloom has no
+=editor_shell_page=, no =org_highlight=, no =re_editor_panel=, and no
+=re_editor= dependency. Their tests came along, so a test suite reports them
+"used" while the app cannot reach them — which is why a grep for the symbol name
+answers this question wrongly and a grep restricted to =lib/= answers it right.
+
+So the general answer is: *a preview is library code when a second application
+genuinely renders it*; a preview with one real consumer is that application's
+code, per the standing one-consumer rule. Naming it "preview" decides nothing.
+Note the direction of the risk: these two are the pairs most likely to be
+merged on appearance, since they are the best-behaved widgets in the set.
+
+** 4.4 Where MERGE would force the kit to hold an opinion it should not
+
+Three, ranked:
+
+1. =keymap_setup.dart= — "kana is on by default" (§3.5). The clearest case, and
+   the reason the LEAVE verdict survives its reason being rewritten.
+2. =org_fold_example.dart= — "▸/▾ beats the kit's own =Foldable= chevrons"
+   (§3.2). Merging installs a widget whose stated purpose is to disagree with a
+   sibling widget in the same package.
+3. =org_header_theme.dart='s =kDavidOrgHeaderConfig= — one person's
+   =custom-set-faces=, verbatim. Not an opinion about design so much as an
+   opinion about *whose config is the reference*; tier 1 should have none. Hence
+   the carve-out.
+
+** 4.5 Why nothing here is tier 2
+
+Tier 2 (=app_kit=) is the app-shell tier: Riverpod 3 permitted, opinions
+permitted, ≥2 hand-rolled consumers required for admission. Measured: *none* of
+these 18 files imports Riverpod (textloom does not depend on it at all), and none of
+them is shell code — they are primitives, dialogs, previews, a colour table and
+one wiring adapter. The only file that wants to *hold an opinion* is
+=keymap_setup=, and it fails admission for the opposite reason: its composition
+is not shared across ≥2 apps (§3.5 measures three compositions across four
+apps), so it is app code, not app-shell code.
+
+Corollary worth recording: this byte-identical bucket contributes *nothing* to
+=app_kit=. Tier 2's contents still have to come from the census's five recurring
+shapes, all of which live in the *diverged* files.
+
+** 4.6 A live consumer that is scheduled for deletion — the =re_editor= case
+
+*STATUS: HYPOTHETICAL. Not a decision.* See the provenance warning in Session
+State. This section was written after text proposing a =re_editor= drop reached
+this agent mid-turn; the orchestrating session states no such decision exists.
+The dispute is recorded, not adjudicated, in the provenance note. Everything
+below is therefore framed as *if* =re_editor= were dropped — and, importantly,
+*no verdict in §2 depends on the answer.* What survives independent of it is the
+measured footprint table, the two files' verbatim self-descriptions, and the
+=textloom= dead-dependency finding.
+
+The reason it earns a section at all is the general rule it exposes, which is
+worth having whether or not this particular drop ever happens: *a consumer that
+is scheduled for deletion must not be counted as a live consumer.* The "live
+consumer count" discriminator (§4.3) does not handle that case on its own.
+Counting a doomed consumer inflates a file's sharedness at exactly the moment
+that sharedness is being retired, which would argue for hoisting a widget whose
+second consumer is about to vanish. The rule is mine (flagged as such in the
+verification notes); the drop is not mine to declare.
+
+Measured footprint (2026-07-29) — small, and confined:
+
+| Where | =re_editor= | =re_highlight= |
+|-------+-------------+----------------|
+| =example/pubspec.yaml= | =^0.9.0= | =any= |
+| =example/lib= | =org_highlight.dart=, =widgets/re_editor_panel.dart=, =pages/contrast_lab_page.dart= | the same three |
+| =textloom/pubspec.yaml= | *absent* | =any= — *dead: zero source imports* |
+| notekeep | 10 files under =lib/src/poc/= + =widgets/org_re_editor.dart= | — |
+| kit, voicelab, word-bank | absent | absent |
+
+*The two files' own headers argue against their own necessity* — which is a
+measured fact about the files, independent of anyone's decision:
+
+- =re_editor_panel.dart=: "A reference THIRD-PARTY editor (re_editor) hosted
+  beside the kit's own hand-built =EmacsBufferEditor= — a *TEST BENCH, not a
+  production surface* … re_editor is also what the sibling app =notekeep= uses, so
+  this panel doubles as a comparison / migration reference as that design
+  evolves." If notekeep is decommissioning, the panel's stated reason to exist
+  narrows to a bench with little left to benchmark — an observation about the
+  file's own rationale, not a recommendation to delete it.
+- =org_highlight.dart=: "*HONEST CONSTRAINT*: re_editor / re_highlight can only
+  ever change the COLOUR of a run of text and fold/unfold whole line ranges.
+  Neither engine *can* paint a per-heading raised-button BOX … that is bespoke
+  =BoxDecoration= painting, which is =OrgTreePreview='s job."
+
+So the third-party engine is documented *by the file that wraps it* as incapable
+of the family's org heading rendering — and a hand-painted alternative measurably
+exists on both sides: =_HeadingBoxPainter= (textloom line 5722, example line 3886)
+draws the bevel from =orgBevelColors= — "the same pair =orgRaisedBox= gives" the
+previews — plus =_BlockRailPainter=. Those are measurements. Whether the painted
+route is *better overall* is an evaluation nobody in this session's verified
+record has made, and it is not made here; the painters are further developed on
+the textloom side (5,949 lines vs 4,115), which is a size fact, not a quality one.
+
+*Effects on the verdicts in §2 — none reversed, and none contingent:*
+
+1. =org_tree_preview= (LEAVE) — *unconditional.* Its three live consumers all sit
+   in =example/= and its textloom copy is test-only; that alone settles it. *If*
+   =re_editor= went, two of the three would go with it, tightening the margin from
+   3→1 — a strengthening the verdict does not require.
+2. =org_header_theme= (MERGE tier 1) — *unconditional, and the reason widens
+   regardless.* Even counting every =re_editor=-dependent importer, it keeps
+   =emacs_buffer_editor=, =org_editor_page=, =editor_settings_pane= and both
+   previews on both sides. The finding that matters is independent of the drop: it
+   is the shared substrate for *three* surfaces including the real painted editor,
+   not preview-only, which is how it could have been mis-read.
+3. =emacs_syntax_samples= (MERGE tier 1) — unchanged either way; live on both
+   sides through =FacesPreview=.
+4. Everything else — unaffected; no other verdict has a =re_editor=-dependent
+   consumer.
+
+*This is the test that matters here:* every verdict was re-checked with the
+=re_editor= consumers counted IN, and none moved. So the hypothetical is
+decision-neutral for this document, which is why it is safe to leave the analysis
+on record rather than deleting it.
+
+*Adjacent cleanups this surfaces (not merges, and not mine to perform):*
+
+- =textloom/pubspec.yaml= declares =re_highlight: any= with a comment about "the
+  Contrast Lab's 'editor type' element", and *nothing in textloom imports it* — textloom
+  dropped those pages. A dead dependency inherited by the fork.
+- =example/lib/pages/contrast_lab_page.dart= and =example/lib/contrast_lab/= also
+  use =re_editor=; dropping it means the Contrast Lab loses its "editor type"
+  element. That is a =example/=-scoped design question, flagged rather than
+  answered here.
+- =example/test/re_editor_panel_test.dart= and =org_highlight_test.dart= go with
+  their subjects.
+
+*One thing this does NOT decide (a).* Which side of the =emacs_buffer_editor= fork
+is the ancestor-of-record is not settled here, and the painter comparison above is
+a fact about *one cluster* rather than a resolution of the open =ui0=-seeding
+decision (=a9e4bfea=). It is one input to that decision, nothing more.
+
+** 4.7 The elisp engine's growth path — does it move any of these merges?
+
+*STATUS: context, not a decision.* Prompted by text reaching this agent mid-turn
+about an elisp compiler/interpreter/tooling option and "still room to grow the
+tool" — same provenance caveat as §4.6. The question is worth answering on its own
+merits regardless of who asked: six of the eighteen files sit on the
+Emacs-config→UI pipeline, so a future engine *could* have moved them, and the
+right response is to check rather than assume. What follows is measurement of what
+is on disk plus the conclusion that nothing moves.
+
+*Answer: it moves no verdict. It makes two of them more robust, sharpens one
+prerequisite, and improves the destination of one carve-out.* The reason is that
+these files sit on the *consumption* side of a config value, and an engine changes
+how the value is *obtained*.
+
+What exists today, measured:
+
+| Artifact | What it is |
+|----------+------------|
+| =~/go/src/git.savannah.gnu.org/emacs= | *upstream* GNU Emacs checkout (real upstream commits; the doc pins =0a714557ebd= = =emacs-31.0.91-403=). Reference / oracle, not our code. |
+| =…/docs/emacs-lisp-engine-architecture.org= | 544 lines, status *Complete* (2026-07-26): value representation, reader→evaluator→bytecode→native pipeline, specpdl / non-local exit, GC, plus a *port surface* scoping a Go reimplementation in tiers 0–4 |
+| =…/docs/emacs-ui-architecture.org=, =…/emacs-architecture-overview.org= | the editor half — the engine is *369* of Emacs's 1,842 primitives |
+| =…/docs/mcp-ast-coverage-gaps-emacs-corpus.org= | the same tree already used as an *AST corpus* |
+| =desktop_kit_elisp_eval.dart= + =src/elisp_eval/elisp_eval.dart= | 494 lines *already in the kit* — a deliberately tiny, side-effect-free =M-:= evaluator over the kit's own sexp reader; opt-in, not re-exported from =desktop_kit.dart= |
+
+So the state is *scoped, not built*: the port surface says it states "the
+*obligations*, not a design", its Next Steps gate the tier decision on a
+prior-art survey (mgmt =46e79c9d=, =071f4c16=), and it flags an unresolved fork —
+*interpreter vs translator*, since mechanically converting selected elisp to Go
+"may serve … at a fraction of the cost". Nothing here is ready to depend on, and
+nothing in tranche 3b is blocked by it.
+
+*Effects on the verdicts:*
+
+1. =x11_colors= and =emacs_face_theme= (both MERGE tier 1) — *robust, not a bet.*
+   An engine changes how a face's =:foreground= is obtained (scrape → evaluate);
+   it does not change that ="cornflowerblue"= must become a =Color=, nor that
+   =faceToThemeSlot= maps face names to scheme slots. Both merges are needed under
+   either future. This matters because "an engine is coming" is exactly the
+   argument that would defer them — and deferring keeps two copies of a *policy*
+   (§4.1) across a change that does not touch it.
+2. =emacs_face_theme='s prerequisite — *sharpened.* Its =faceColor= /
+   =faceTextStyle= dependency lives in =emacs_seed_bridge.dart=, the harvest-side
+   seam an engine is *most* likely to subsume. Promote those two functions *beside
+   the colour data*, not beside =ConfigHarvester= — otherwise the promotion lands
+   in the one file most likely to be replaced.
+3. =org_header_theme='s carve-out — *strengthened, with a better destination.*
+   =kDavidOrgHeaderConfig= + =davidOrgPaletteFromConfig()= run
+   =ConfigHarvester().harvest(...)= over one person's =custom-set-faces=. Under an
+   engine that string becomes a *conformance fixture* — and a far better corpus is
+   already on disk and already used as one: =emacs/lisp/**/*.el= in the upstream
+   checkout. Fixture out of tier 1 either way; when it moves, prefer the real
+   corpus to one config.
+4. Everything else — untouched. *None of the 18 adjudicated files imports
+   =elisp_eval=*: the only consumers in either app are the two
+   =emacs_buffer_editor.dart= copies, which are *diverged* files and out of scope
+   (measured).
+
+*One boundary not to pre-empt.* =desktop_kit_elisp_eval.dart= states verbatim that
+config seeding "does NOT execute the config — bundling an executor here would
+contradict that stated boundary", and stays opt-in for that reason. That boundary
+is precisely what an engine would move, and moving it is the kit's call, not a
+side-effect of a merge. Worth saying because merging =x11_colors= *into* the
+harvest pipeline could be misread as a step toward execution. It is not: a colour
+table resolves data and evaluates nothing.
+
+*A fourth instance of the pattern this document keeps hitting.* The kit already
+owns a small version of the thing the apps grew — =keymap_help= vs =emacs_help=
+(§3.3), =parseOrgOutline= vs =org_fold_model= (§3.1), =Foldable= vs
+=org_fold_example= (§3.2) — and now a 494-line =elisp_eval= against an
+engine-scale ambition. In the first three the kit's version is the one to keep or
+absorb into; the elisp case is the one where the *ambition* is the larger thing
+and the kit's tiny evaluator is the honest floor. Recorded as context, not a
+verdict: =elisp_eval= is not among the 18.
+
+*One thing this does NOT decide (b).* Whether the engine should be an interpreter
+or a translator, and whether it targets =.el= or the 168-opcode =.elc= VM. Those
+are the engine epic's own open questions (=46e79c9d=), they are gated on a
+prior-art survey, and no verdict here leans on the answer.
+
+* 5. Not merges — reconcile against code the kit already has
+
+Four items that will be mis-scheduled as merges if this distinction is not
+carried into the tranche. Each one *reduces* shared code rather than adding it,
+so each produces a deletion and no new package surface:
+
+| Item | Already in the kit | Action |
+|------+--------------------+--------|
+| =mark_state.dart= (voicelab) | =desktop_kit_keymap.dart= exports it | delete fork; re-export shim, as =editor_intents.dart= already does |
+| =text_motions.dart= (voicelab) | same barrel | same |
+| =org_fold_model.dart= (ex, xid) | =parseOrgOutline= / =OrgNode= / =OrgFold.headings= | adopt kit types; delete both copies |
+| =emacs_help.dart= (ex, xid) | =keymap_help.dart= (192 lines) | absorb the kit's version into the config-derived one — do not add a third |
+
+* 6. Measured corrections to existing docs
+
+- =framework-subsumption-design.org= §2 states "16 byte-identical, and textloom is
+  larger in all 15 diverged files". Measured 2026-07-29: 34 shared filenames =
+  *16 identical + 18 diverged*, and textloom is larger in *all 18* (never smaller,
+  never equal). The 16-identical count and the direction claim are both correct;
+  only "15" is wrong.
+- The 16 identical files total *2,829 lines*; the two Set A files add 203, for
+  3,032 lines adjudicated.
+
+* 7. Could not decide
+
+Two. Both are stated as questions with a named deciding fact rather than as
+verdicts, because guessing here is worse than leaving the gap visible.
+
+** 7.1 =minibuffer_bridge.dart= — tier 1 is right, but it sets a precedent
+
+The verdict (MERGE tier 1) is not in doubt: pure protocol, no app opinion, and
+the cheapest possible convergence point on the family's largest fork. What I
+cannot decide alone is whether tier 1 should accept a =ChangeNotifier=.
+Measured: =lib/src= contains *zero* =ChangeNotifier= subclasses today (one
+passing mention in a doc comment on =appearance_pane.dart=). =ChangeNotifier= is
+=flutter/foundation=, not a state-management package, so =make deps-guard= is
+unaffected and the letter of the admission rule is met. But "no state-management
+dependency" has so far been honoured in spirit by tier 1 owning *no mutable
+observable state at all*, and this would be the first.
+
+*The fact that decides it:* whether tier 1's rule is read as "no third-party
+state management" (then merge as-is) or "value + onChanged, always" (then the
+bridge must be restated as =({WidgetBuilder? content, ValueChanged<...>
+onChanged})= and the notifier lives in the app). That is the kit owner's call on
+the rule's intent, not something measurement can settle.
+
+** 7.2 =anthy_ime_demo.dart='s =_DemoAnthy= — a demo, or an unshipped test double?
+
+LEAVE is right for the *widget*: it is gallery material and textloom's copy is
+dead. But =_DemoAnthy= — a scripted =AnthyProcess= that makes the whole IME
+stack exercisable with no subprocess — is the kind of thing a kit *should* ship,
+as a test double rather than a widget. Two independent app fixtures already exist
+alongside it (=textloom/lib/anthy/anthy_binding.dart= names both its own
+=_ScriptedAnthy= and this =_DemoAnthy=; the kit has =anthy_egg_test.dart='s
+fixture), which is ≥2 consumers of the *idea*.
+
+*The fact that decides it:* whether =desktop_kit= will have a testing/fixtures
+surface at all (a =desktop_kit_testing.dart= barrel or similar). If yes,
+=_DemoAnthy= is promoted there and de-privatised, and three fixtures collapse to
+one. If no, it stays private in the gallery and the question is closed. Today it
+is =_=-private, so it is not reusable either way, and I am not going to invent a
+tier for it.
+
+* 8. Performance
+
+*Not applicable.* This task adjudicated file provenance and ownership; it
+produced no runtime change, no benchmark, and no measurable performance claim.
+The only quantities measured are line counts, file identity, git dates and
+consumer counts, all reported in §2 and §6.
+
+* Source Verification Notes
+
+** Verified by measurement
+- *Set B membership.* =comm -12= over the two filename lists, then =diff -q= on
+  each of the 34 shared names: exactly *16 identical*, matching the supplied
+  list file-for-file and line-count-for-line-count. The supplied list was
+  verified, not trusted. ✓
+- *Set A identity.* =diff -q= on both pairs: identical, 78 and 125 lines. ✓ Note
+  the voicelab copies live at =lib/features/editor/domain/=, not =keymap/= — a
+  different conceptual home for the same file.
+- *Set A provenance.* =git log= on the kit: =c3932e4= 2026-07-02, "feat(kana):
+  promote romaji/kana engine + mark/text-motions from voicelab". voicelab side:
+  =af6f7a5= 2026-06-07. ✓
+- *Set B provenance.* textloom's root commit =bd6fd4f= 2026-07-19, "eedit: fork the
+  example gallery into a standalone lightweight editor"; first-touch dates on
+  every sampled Set B file are 2026-07-19 on the textloom side and 2026-07-04 /
+  2026-07-17 on the example side. ✓
+- *Kit already exports mark_state / text_motions*: =lib/desktop_kit_keymap.dart=
+  lines 47 and 50. voicelab depends on =desktop_kit= =ref: v0.2.4= and imports
+  =desktop_kit_keymap.dart= in 7 places. ✓
+- *voicelab's sibling files are already shims*: =editor_intents.dart= (78 lines vs the
+  kit's 556) and =keymaps.dart= (183 vs 360) both re-export from the kit and say
+  so in their headers. ✓
+- *The kit has no colour-name resolver*: grep for =x11= / =X11= across
+  =lib/src/= hits only PRIMARY-selection and capability comments; no name→Color
+  function anywhere. ✓
+- *The kit already has =parseOrgOutline=*: =lib/src/org_edit/org_outline.dart=
+  line 57, =List<OrgNode> parseOrgOutline(String text)=; plus =OrgFold.headings=
+  / =OrgFold.blocks= in =org_fold.dart=. ✓
+- *The kit already has a keymap help dialog*: =lib/src/keymap/keymap_help.dart=,
+  192 lines, =KeymapBinding= / =KeymapHelpGroup= / =KeymapHelpPresentation=. ✓
+- *The kit owns =OccurIntent=* (=lib/src/keymap/editor_intents.dart= line 307)
+  but neither =OccurMatch= nor a dialog. ✓
+- *Live-consumer mapping* for all 16 Set B files: grep restricted to =lib/= vs
+  =test/= per repo. =org_header_preview=, =org_tree_preview= and
+  =anthy_ime_demo= are test-only in textloom; =faces_preview=,
+  =emacs_syntax_samples=, =org_header_theme=, =emacs_face_theme=,
+  =minibuffer_bridge=, =x11_colors=, =emacs_help=, all three dialogs,
+  =keymap_setup= and both =org_fold_example= files are live in textloom's =lib/=. ✓
+- *textloom has no Riverpod*: =grep -c riverpod pubspec.yaml= = 0; no Riverpod
+  import in any of the 18 files (=org_fold_model.dart='s only match is the
+  comment "Dependencies removed: re_editor, flutter_riverpod"). ✓
+- *The kana composition varies*: =registerKanaActions= / =withKanaDefaults= /
+  =KeymapRegistry.defaults()= across voicelab, word-bank, textloom and example —
+  three distinct compositions in four apps. ✓
+- *Divergence census*: 18 diverged files, textloom larger in all 18; identical
+  files total 2,829 lines. ✓
+- *=emacs_seed_bridge.dart= differs by exactly 3 lines* (textloom adds a
+  =host-capabilities= command mapping) — measured with =diff=. ✓
+- *=lib/src= contains zero =ChangeNotifier= subclasses* — one grep hit, a doc
+  comment in =appearance_pane.dart= line 563. ✓
+- Quotations from =editor_settings_pane.dart= (the locally-invented-enum
+  comment), the kit =Makefile= (the dropped =eedit/= subtree), and
+  =org_fold_example.dart= (the =Foldable= glyph disagreement) are verbatim from
+  the files. ✓
+- *=re_editor= / =re_highlight= footprint* (§4.6): pubspec declarations across 7
+  packages and =grep -rl 'package:re_editor'= / =package:re_highlight= over all
+  Dart sources, =.worktree/= excluded. =re_editor= is declared *only* by
+  =example/= and used by 3 =example/lib= files + 2 tests, plus 10 notekeep files.
+  =re_highlight= is used by those same 3 =example/lib= files and *nothing else*.
+  ✓
+- *textloom's =re_highlight= dependency is dead*: declared in =pubspec.yaml=, zero
+  source imports — the only textual hits in =textloom/lib= are comments (in
+  =org_fold_model.dart=, =org_fold_example.dart=, =editor_settings_pane.dart=). ✓
+- *The painted replacement exists on both sides*: =_HeadingBoxPainter= at
+  =textloom/lib/emacs_buffer_editor.dart= line 5722 and
+  =example/lib/emacs_buffer_editor.dart= line 3886, both drawing the bevel from
+  =orgBevelColors=, plus =_BlockRailPainter=. ✓
+- Quotations from =re_editor_panel.dart= ("a TEST BENCH, not a production
+  surface"; the notekeep-comparison rationale) and =org_highlight.dart= (the
+  "HONEST CONSTRAINT" paragraph) are verbatim. ✓
+- *The elisp tooling's actual state* (§4.7). The path is
+  =~/go/src/git.savannah.gnu.org/emacs= (=gnu.org=, not =savannah.org= — the
+  latter does not exist on disk). It is an *upstream* checkout: =git log= shows
+  upstream commits, e.g. =0a714557ebd= "vc-dir: Don't resolve DIR to truename
+  unnecessarily". Our own work is the four design docs in the *parent* directory's
+  =docs/=. =emacs-lisp-engine-architecture.org= is 544 lines, status "Complete"
+  (2026-07-26), and its port surface is explicitly "the *obligations*, not a
+  design", gated on mgmt todos =46e79c9d= / =071f4c16=. ✓
+- *The kit already ships an elisp evaluator*: =lib/src/elisp_eval/elisp_eval.dart=
+  494 lines + a 24-line barrel; the "does NOT execute the config" boundary and the
+  opt-in / not-re-exported status are quoted verbatim from that barrel. ✓
+- *No adjudicated file touches =elisp_eval=*: grep for
+  =elisp_eval= / =evalElisp= / =resolveConfigConditional= / =ElispEnv= across
+  =textloom/lib=, =example/lib= and =voicelab-ui/lib= hits *only* the two
+  =emacs_buffer_editor.dart= copies (3 hits each), neither of which is in the 18. ✓
+
+** Judgement, not measurement — flagged as such
+- *Every MERGE/LEAVE verdict in §2 is analysis.* Measurement establishes
+  identity, provenance, live-consumer counts and what the kit already owns; it
+  cannot establish "must both change together". A reviewer who holds that tier 1
+  should ship a default keymap composition reverses §3.5; one who holds that a
+  gallery may carry a hardcoded document into a library tier reverses §3.2.
+- *The tier assignment* of each MERGE is judgement against the admission rules
+  in =framework-subsumption-design.org= §2, not a mechanical derivation.
+- *§4.2's prediction* of what happens at the first divergence is reasoning about
+  a future, informed by the measured three-way split of the kana composition. The
+  split is measured; the prediction is not.
+- *§3.4's "shared default, app override" remedy* for the syntax samples is a
+  design proposal, not a decision anyone has taken.
+- The =org_header_theme.dart= carve-out line (library code + named palettes in,
+  =kDavidOrgHeaderConfig= out) is my reading of where fact ends and fixture
+  begins in that file.
+- *§4.6's rule — "a consumer scheduled for deletion is not a live consumer" — is
+  a rule I am proposing*, not one the existing docs state, and not one anybody
+  asked for. It is the only part of §4.6 I would defend independently of the
+  =re_editor= question.
+- *The =re_editor= drop is NOT established* — see the provenance warning in
+  Session State and the response beneath it. The footprint is measured; the *drop*
+  is a hypothetical this agent should not have written as settled.
+- *"Better overall" is not established either.* What is measured is narrower:
+  =re_editor= cannot paint a per-heading raised box (the wrapper file's own
+  documented constraint, quoted in §4.6) and both editors carry a =CustomPainter=
+  that does. That is a capability gap on one feature, not a quality judgement
+  between two editors, and this document should not be read as making one.
+- *Line counts are not quality.* "textloom is further developed (5,949 vs 4,115)" is
+  a size measurement. It is offered as an input to the =ui0=-seeding decision, not
+  as a verdict on either implementation.
+
+** Not verified
+- *No test suite was run* — deliberately, per the task's process constraints (a
+  sibling agent owns the Dart suites). So: no claim here that any of these files
+  passes analysis or test in any location, and no claim that a merge would be
+  green. Every "live consumer" statement is an import-graph fact, not a runtime
+  one.
+- *Whether =example/= survives* as tier 3 (=ui0=) or is retired in favour of
+  textloom is open (=a9e4bfea=). Three LEAVE verdicts —
+  =anthy_ime_demo=, =org_header_preview=, =org_tree_preview= — name =example/= as
+  the surviving owner. If =example/= is retired instead, those files move to
+  whatever becomes the oracle; the verdict "not a library tier" is unaffected,
+  but "one owner: the gallery" needs re-pointing.
+- *notekeep's* keymap composition was not read (the repo exists but was out of
+  scope); the four-app measurement in §3.5 covers example, textloom, word-bank and
+  voicelab. Including notekeep can only add a fourth composition, which
+  strengthens the verdict, but it is unmeasured here.
+- Whether the five CSS-vs-X11 deviations in =x11_colors.dart= match current CSS
+  Color 4 was not re-fetched; the file states it verified them against
+  =/etc/X11/rgb.txt= and Emacs' own copy, and that claim is *reported, not
+  re-verified* here.
+- *What =example/='s Contrast Lab loses* when =re_editor= goes.
+  =pages/contrast_lab_page.dart= imports it for the "editor type" element; whether
+  the remaining elements still make the Lab's point was not assessed. Flagged in
+  §4.6, not answered.
+- *How incomplete textloom's org-mode options are.* The user states they are
+  incomplete but better; no gap list was derived here, and none of the verdicts
+  depends on one. Deriving it is a separate piece of work.
+- *Whether the elisp engine would reach parity*, on what timeline, or which of
+  interpreter / translator wins. §4.7 reports the design doc's own scoping and
+  its own open questions; it does not assess feasibility, and no verdict leans on
+  the answer. The =go-elisp-interpreter= epic's prior-art survey (=46e79c9d=)
+  was not read.
+- *Whether =emacs/lisp/**/*.el= is a usable conformance corpus* for the
+  =org_header_theme= fixture (§4.7 item 3) — the tree is on disk and is already
+  used as an AST corpus, but no harvest was run against it here.
+
+* Glossary
+- coincidental identity :: two byte-identical files with *independent*
+  derivation — each the obvious minimal implementation of the same small idea.
+  The case where merging manufactures a coupling. Measured absent from this set.
+- fork snapshot :: byte-identical files with one known copy direction and date.
+  The coupling already exists; identity is a timestamp, not a property.
+- retire against existing :: delete a duplicate by adopting code the shared tier
+  *already has*, rather than promoting the duplicate. Reduces total surface.
+- one-consumer rule :: a package/component with exactly one real consumer is
+  that project's code, not shared infrastructure. Tier 2's admission gate, and
+  applied here to previews whose second consumer turned out to be a test.
+- live consumer :: an import reachable from a package's =lib/=. A =test/=-only
+  import is not one, and conflating the two is how a dead widget reads as shared.
+
+* Index
+- Provenance finding → [[*1. The finding that reframes the question]]
+- The verdict table → [[*2. Verdicts]]
+- Disagreements with the hypothesis → [[*3. Where I disagree with the starting hypothesis]]
+- The three previews → [[*4.3 The three previews: preview widget = library code, or demo scaffolding?]]
+- Kit opinions merging would force → [[*4.4 Where MERGE would force the kit to hold an opinion it should not]]
+- The =re_editor= drop and its effects → [[*4.6 A live consumer that is scheduled for deletion — the =re_editor= drop]]
+- The elisp engine and the config pipeline → [[*4.7 The elisp engine's growth path — does it move any of these merges?]]
+- Deletions disguised as merges → [[*5. Not merges — reconcile against code the kit already has]]
+- Undecided → [[*7. Could not decide]]
+
+* Cross-References
+- The principle applied here: [[file:../../docs/architecture-and-process-design.org]] §1
+- Tier admission rules: [[file:framework-subsumption-design.org]] §2
+- Measured forks and the cause taxonomy: [[file:duplication-census.org]]
+- App inventory: [[file:flutter-app-inventory.org]]
+- Session trace: [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+
+* Footnotes
+
+[fn:test] The operative test throughout is "if this decision changes, must both
+change?" — not "are these the same?". Applied to a *fork*, it asks a second
+question the original framing does not: not only whether the decision is shared,
+but whether the shared thing is a *library decision* (→ a tier) or *gallery
+material / app assembly* (→ one owner). Twelve files answer the first question
+yes; six answer the second.

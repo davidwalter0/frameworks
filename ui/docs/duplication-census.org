@@ -1,0 +1,517 @@
+:PROPERTIES:
+:ID:       frameworks-duplication-census
+:END:
+#+title: Duplication census — measured forks across the desktop family
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-08-09
+:END:
+
+** Status
+Census complete for the Dart UI surface and the Go installer surface. Every
+figure measured 2026-07-29; the method for each is stated inline so it can be
+re-run.
+
+*2026-08-09 addendum:* =beacon-sim= (a repo outside the eleven-app inventory this
+census covers) built a new Flutter desktop app, =beacon-sim/ui/beacon_monitor=, as a
+DIRECT, from-scratch consumer of =frameworks/ui/pkg/desktop_kit= -- the first
+consumer verified against the NEW home rather than =ui-kit-private=. See
+"New consumer" below.
+
+** Completed
+- [X] Byte-identical pairs
+- [X] Kit-vs-app divergence with *direction* established per pair
+- [X] Cross-app forks with no kit equivalent
+- [X] Go installer triplication (now resolved)
+- [X] Classify every entry by fork *cause*, not just size
+- [X] First fresh (non-census, non-forked) consumer of the new home verified
+  end-to-end: =beacon_monitor= (2026-08-09) -- see "New consumer" below
+
+** Next Steps
+- [ ] Re-run after each tranche; this file is the burn-down chart
+- [ ] Extend to the test surface once =b4749c15= (engine promotion before test
+  pruning) is unblocked
+
+* How to read this document
+
+Duplication in this family has *four distinct causes*, and they take opposite
+remedies. Sorting by line count alone produces the wrong work order, so every
+entry below is classified:
+
+| Cause | Meaning | Remedy |
+|-------+---------+--------|
+| *STALE* | app predates the kit; the kit copy is newer and larger | delete the app copy — an *upgrade*, expect behaviour change |
+| *AHEAD* | the app copy is newer than the kit's | port the app's delta *into* the kit first, then delete |
+| *ORPHAN* | promoted app→kit, adoption never executed | run the adoption; the shared copy already exists |
+| *ABSENT* | no kit equivalent; two or more apps forked in parallel | design the shared component from the union |
+| *TEMPLATE* | two or more apps instantiate the same architectural *pattern*, with no shared code and no ancestor file | extract the pattern as scaffolding — the union is already agreed, so this is the *easiest* class, not the hardest |
+
+=TEMPLATE= was added 2026-07-29 by the census extension and is not a
+refinement of =ABSENT= — it implies the opposite difficulty. =ABSENT= means two
+apps solved one problem in parallel and their union must be negotiated.
+=TEMPLATE= means they solved it *the same way on purpose*, from a shared
+description, so the design consensus already exists. See §5c.
+
+Direction matters more than magnitude. A *STALE* fork is safe to delete and
+risky to keep; an *AHEAD* fork is the reverse. Deleting an *AHEAD* fork silently
+regresses the app, and nothing in a line-count table warns you.
+
+** Measurement caveat, stated once
+
+Two different diff measures appear below and they answer different questions:
+
+#+begin_src sh :results verbatim
+diff -q A B                                   # identical? yes/no
+diff A B          | grep -c '^[<>]'           # edit distance (order-sensitive)
+diff <(sort A) <(sort B) | grep -c '^[<>]'    # set difference (order-insensitive)
+#+end_src
+
+The *sorted* form answers "is this the same code?" and is immune to reordering;
+the *unsorted* form approximates patch size. A pair can show a large unsorted
+delta and a small sorted one purely from moved blocks. Where both are given the
+column is labelled. Neither is a review substitute — read the diff before
+deleting anything.
+
+* 1. Byte-identical — the unambiguous cases
+
+Kit vs =voicelab=, =diff -q= reports no difference:
+
+| File                        | Lines | Kit path                     |
+|-----------------------------+-------+------------------------------|
+| =mark_state.dart=           |    78 | =keymap/mark_state.dart=     |
+| =text_motions.dart=         |   125 | =keymap/text_motions.dart=   |
+
+203 lines, zero risk, zero judgment required. These are the migration's
+warm-up: delete from =voicelab=, import from the kit, run the app's suite.
+Cause: *STALE* (trivially — the files never diverged).
+
+* 2. Kit vs app — divergence with direction
+
+Kit vs =voicelab=, same basename. "Raw diff" is unsorted edit distance.
+
+| File                       | Kit | voicelab | Raw diff | Direction | Cause  |
+|----------------------------+-----+-----+----------+-----------+--------|
+| =editor_intents.dart=      | 556 |  78 |      606 | kit +478  | STALE  |
+| =keymaps.dart=             | 360 | 183 |      485 | kit +177  | STALE  |
+| =ime_controller.dart=      | 562 | 398 |      208 | kit +164  | STALE  |
+| =kill_ring.dart=           | 193 | 136 |      109 | kit +57   | STALE  |
+| =kana.dart=                | 692 | 633 |       73 | kit +59   | STALE  |
+| =prefix_dispatcher.dart=   | 122 |  99 |       41 | kit +23   | STALE  |
+| *=romaji_input_buffer.dart=* | *288* | *317* | *31* | *app +29* | *AHEAD* |
+
+Six of seven are *STALE* — the kit is a strict superset and =voicelab= is
+running older, smaller code. =editor_intents= is the extreme: the app has 78
+lines where the kit has 556, so "de-forking" here means gaining 478 lines of
+intent handling the app has never had.
+
+*=romaji_input_buffer= is the exception and the reason this table has a
+direction column.* The app copy is 29 lines *larger* than the kit's with only 31
+differing lines — a small local addition on top of shared code. Deleting it
+would regress =voicelab='s romaji handling. Correct order: port the delta into
+the kit, verify, *then* delete. Any tranche that treats this file like the other
+six is a defect.
+
+Totals: 2,286 kit lines against 1,844 app lines across these seven files.
+
+* 3. Cross-app forks — no kit equivalent, or a different kit shape
+
+Two or more apps solved the same problem independently. "Differing" is the
+*sorted* (set-difference) measure.
+
+| Component               | word-bank  | voicelab | textloom | Differing (pair)      | Kit equivalent                             | Cause  |
+|-------------------------+-----+-----+-------+-----------------------+--------------------------------------------+--------|
+| =resizable_split.dart=  | 174 | 270 |     — | 202 (word-bank↔voicelab)          | ~ =resize_handle= 63 + =adaptive_layout= 217 + =span_host= 403 | ABSENT |
+| =theme.dart=            | 262 | 601 |     — | 501 (word-bank↔voicelab)          | ~ =desk_theme= 445 + =appearance_pane= 1004 | ABSENT |
+| =action_strip.dart=     |   — | 262 |   136 | 238 (textloom↔voicelab)       | none                                       | ABSENT |
+| =chrome_action.dart=    |   — | 159 |    53 | 146 (textloom↔voicelab)       | none                                       | ABSENT |
+| =keymap_toggle_chip.dart= |  43 |  69 |     — | 72 (word-bank↔voicelab)           | none                                       | ABSENT |
+
+Reading:
+
+- *=resizable_split=* — the kit does *not* have a =resizable_split=. It has
+  three lower-level pieces the two apps each assembled differently. This is the
+  clearest "design from the union" case: neither fork is the answer, and the kit
+  primitives are the substrate.
+- *=theme.dart=* — 501 differing lines out of 863 total. Both are *wiring*
+  (build a =ThemeData=, install a palette, expose a provider), not colour
+  mathematics; the kit already owns the maths (=apca=, =contrast=, =hct_tools=,
+  =desk_palette=). The duplicated part is exactly the app-shell tier that does
+  not exist yet.
+- *=action_strip= / =chrome_action=* — 610 lines across four files, no kit
+  equivalent at all. =voicelab='s is roughly 2× =textloom='s in both files, so expect a
+  superset relation to emerge on inspection rather than a genuine 50/50 merge.
+- *=keymap_toggle_chip=* — 112 lines total. Small, but it sits on the kit's
+  keymap engine, so it belongs beside it.
+
+* 4. Same-purpose surfaces at wildly different sizes
+
+Not textual forks — independent solutions to an identical requirement. The
+*spread* is the finding: a 10× range means there is no shared notion of what the
+surface is.
+
+** About / version
+
+| Where | Lines | Path |
+|-------+-------+------|
+| kit   |   231 | =about/about_dialog.dart= |
+| voicelab   |   221 | =features/about/presentation/about_dialog.dart= |
+| ghk   |    50 | =src/screens/about_screen.dart= |
+| word-bank    |    27 | =widgets/about.dart= |
+
+529 app lines against a 231-line kit component that three apps declined. An
+About dialog is the most nearly-identical requirement any two desktop apps can
+have; that it forked four ways is a *discoverability* finding, not a
+requirements one.
+
+** Settings persistence and presentation
+
+| Where | Lines | Detail |
+|-------+-------+--------|
+| kit | 686 + 157 | =settings_presentation= + =settings_store= (+196 backends) |
+| voicelab | 3157 + 830 | =settings_pane= + =settings_providers= |
+| word-bank  | 969 | =settings_models= 559 + =autosave_store= 162 + =workspace= 164 + =recents_store= 84 |
+| textloom | 590 | =settings_categories= |
+| alert-log | 513 + 309 | =appearance_pane= + =settings_view= |
+| mountbridge | 433 | =settings_view= |
+| mail-sweep | 161 + 40 | =settings_view= + =settings_providers= |
+| netroute_manager | 165 + 48 | =categories= + =settings_screen= |
+| ghk | 149 + 53 | =categories= + =settings_screen= |
+
+*word-bank declares its own =abstract class SettingsStore= and
+=FileSettingsStore=* at =settings_models.dart:318= and never imports
+=desktop_kit_settings= — verified, the barrel appears nowhere in its =lib/=. So
+the kit's store exists, the app has a same-named class, and the two are
+unrelated code. =autosave_store.dart= and =recents_store.dart= then mirror
+*word-bank's own* store's file/memory split, compounding it: 969 lines total.
+
+=voicelab='s =settings_pane= at 3,157 lines is the largest single file in any
+app in the family and is 4.6× the kit's =settings_presentation=.
+
+Apps importing the kit's settings barrel: textloom (5 files),
+alert-log (4), mail-sweep (3), mountbridge (2), notekeep (2). Not
+importing it: voicelab, word-bank, ghk_dashboard, netroute_manager, task-board.
+*Five adopt, five do not* — the cleanest available measure of the kit's reach.
+
+** App shell
+
+Nine of eleven apps hand-roll one; the kit provides none.
+
+| App | Lines | File |
+|-----+-------+------|
+| voicelab | 1392 | =app/app_shell.dart= |
+| ghk |  399 | =src/shell.dart= |
+| task-board | 118 | =presentation/features/shell/app_shell.dart= |
+| netroute_manager | 116 | =src/shell.dart= |
+| mail-sweep | 103 | =app/app_shell.dart= |
+| alert-log | 53 | =app/app_shell.dart= |
+
+2,181 lines. The 1392-vs-53 spread is the whole argument for an =app_kit= tier:
+these are not different requirements, they are different amounts of
+give-up. =voicelab='s shell absorbed pane management, chrome and menus because there
+was nowhere else to put them.
+
+* 5. The =task-board= ORPHAN — promoted, never adopted
+
+The only *ORPHAN* class in the census, and the most important entry because it
+is a *process* failure rather than a code one.
+
+| Component | Kit (promoted) | task-board (origin) | Differing |
+|-----------+----------------+--------------------+-----------|
+| =adaptive_layout= | 217 | 237 | 256 |
+| =led_indicator=   | 168 |  99 | 139 |
+| =resize_handle=   |  63 |  53 |  22 |
+
+=task-board/docs/desktop-kit-gap-evaluation.org= (2026-07-04) specified a
+two-part plan: *promote* these three into new =desktop_kit_layout= /
+=desktop_kit_status= entrypoints as controlled widgets, and *adopt* the kit's
+theme/settings/clipboard/about in return. Kit commit =af177de= (2026-07-04,
+"layout+status: promote AdaptiveLayout/ResizeHandle/SpanHost/LedIndicator")
+executed the promotion. The adoption never ran — that doc's Session State still
+reads =[ ] Adoption worktree=.
+
+Evidence of the direction, not merely the correlation: =task-board='s
+=AdaptiveLayout= is still Riverpod-coupled (=ref.watch(localStorageProvider)=
+plus four =ref.read= writes), while the kit's is the controlled refactor the
+plan mandated (=required this.mode= + callbacks, no =WidgetRef=).
+
+*The lesson, which generalises to this entire consolidation:* promotion without
+a gated adoption step does not reduce duplication, it *increases* it — one
+implementation became two. The copy-first invariant is only safe because it ends
+in an explicit retire-the-fork step; drop that step and every tranche in
+[[file:framework-subsumption-design.org]] terminates in the =task-board= state.
+
+* 5b. =textloom= vs the kit's =example/= — the largest fork, found last
+
+The kit ships an =example/= gallery: 51 lib files, 68 test files, 30,332 lines
+total, with 12 pages under =lib/pages/= (about, appearance, clipboard,
+contrast_lab, editor_shell, keymap, layout, org_editor, settings, status, theme,
+widgets) and its own suite. It is a real harness, not a toy.
+
+*It is also the ancestor of =textloom=.* 34 of textloom's 67 lib files — *51%* — share a
+filename with =example/lib=:
+
+| Bucket | Count | Total lines (example → textloom) |
+|--------+-------+------------------------------|
+| byte-identical | 16 | ~2,900 unchanged |
+| near-identical (≤20 differing, sorted) | 3 | 573 → 578 |
+| diverged, *textloom larger in every case* | 15 | 8,509 → 12,441 |
+| *all 34* | *34* | *11,982 → 15,919* |
+
+*Bucketing note (2026-07-29):* the three "near-identical" files DO differ, so the
+honest summary is *16 identical + 18 differing = 34*, and =textloom= is larger in
+all 18. The three-bucket split above is useful for scheduling — a 1-line delta
+is not a 2,088-line delta — but anywhere the count matters, "18 files differ" is
+the correct statement and "15 diverged" understates it by separating three files
+into a bucket whose name implies they are the same. Elsewhere in these docs the
+figure appears as 15; read it as 18.
+
+Byte-identical includes =x11_colors= 542, =org_header_theme= 338, =anthy_ime_demo=
+291, the =org_fold_example= pair 453, =emacs_help= 202, =emacs_face_theme= 176,
+=org_header_preview= 177, =faces_preview= 135, =org_tree_preview= 123.
+
+Diverged, largest first:
+
+| File | example | textloom | Differing |
+|------+---------+-------+-----------|
+| =emacs_buffer_editor.dart= | 4115 | 5949 | 2088 |
+| =pages/org_editor_page.dart= | 1087 | 1858 | 1285 |
+| =main.dart= | 557 | 958 | 995 |
+| =gallery_state.dart= | 116 | 332 | 232 |
+| =widgets/kill_ring_dialog.dart= | 70 | 212 | 232 |
+| =widgets/clipboard_panel.dart= | 494 | 641 | 205 |
+| =widgets/buffer_list_dialog.dart= | 119 | 153 | 166 |
+| =emacs_buffer_controller.dart= | 203 | 304 | 153 |
+
+Tests: 55 shared filenames, only *3* byte-identical (example 68 files / 10,906
+lines; textloom 115 / 20,680). The tests diverged much further than the source,
+which is what happens once the source grows.
+
+*Cause: STALE, with =example/= as the stale side.* Direction is uniform — textloom
+is larger in all 15 diverged files. The tell is =gallery_state.dart=: a name that
+only makes sense in a gallery, sitting in a standalone editor at 332 lines
+against the gallery's 116. textloom (first commit 2026-07-19, post-kit) was forked
+*from* =example/= and developed past it.
+
+** Why this was missed, and what it says about the census method
+
+Every earlier measure asked *"does the app import =desktop_kit=?"*. By that
+measure textloom is the family's **best** citizen — 38 of 67 files, the highest
+adoption ratio anywhere. An adoption ratio structurally cannot see a fork of the
+*example* app, because =example/= is not the kit.
+
+So: *cross-check app filenames against =example/= as a standard census step,
+alongside app-vs-kit.* This finding is the reason the =example/= surface is now
+part of the census rather than a footnote in the inventory.
+
+** Consequence for =ui0=
+
+=ui0= was designed as =example/= promoted from demo to oracle
+([[file:framework-subsumption-design.org]] §2). That is now the wrong seed:
+=example/= is the stale ancestor of a live app, so seeding =ui0= from it starts
+3,937 lines behind the version people actually run. Three options, to be chosen
+*deliberately* rather than fallen into by a tranche:
+
+(a) *Seed =ui0= from textloom.* textloom already is "a standalone editor built on
+    desktop_kit" — the oracle's job description.
+(b) *Promote the shared engine into tier 1 / tier 2 and de-fork both.* Highest
+    value, largest effort.
+(c) *Retire =example/=* and let textloom be the oracle in place.
+
+Recommendation: (b) for the byte-identical library files, (a) for the shell.
+Tracked in =a9e4bfea=; it supersedes the seed assumption in =66e1b89b=.
+
+** The independent finding inside it
+
+=emacs_buffer_editor.dart= is *4,115 lines in =example/= and 5,949 in textloom* —
+larger than any file in the kit itself (kit's biggest is =emacs_buffer.dart= at
+2,768). A ~5k-line editor implementation living in an *example* app is
+un-promoted engine code in the worst possible place: it reads as sample code and
+is therefore treated as disposable, while being the largest implementation in the
+family. =pages/org_editor_page.dart= (1,087 / 1,858) is the same shape.
+
+Immediately available with no design decision: the 16 byte-identical files, ~2,900
+lines. =x11_colors.dart= (542) and the =org_fold_example= pair (453) are pure
+library code with no gallery-specific content and belong in tier 1 now.
+
+* 5c. New consumer of the new home (not a fork): beacon_monitor (2026-08-09)
+
+Distinct from every row above: this is a FRESH app depending on
+=frameworks/ui/pkg/desktop_kit= directly, not a fork being measured for
+consolidation. Recorded here because it is the first end-to-end proof that a
+consumer OTHER than the tranche-0 copy operation itself can build against the
+new home.
+
+- *Location:* =beacon-sim/ui/beacon_monitor= (a monitor UI for the beacon-sim experiment fleet;
+  =beacon-sim= is not one of the eleven apps in [[file:flutter-app-inventory.org]] --
+  it is a different repo entirely, so this row is additive to that inventory,
+  not a correction of it).
+- *Dependency:* =desktop_kit: {path: ../../../frameworks/ui/pkg/desktop_kit}=
+  -- the canonical relative path from a primary checkout, matching the
+  =ghk_dashboard=/=netroute_manager= convention exactly (path dependency + a
+  gitignored =pubspec_overrides.yaml= for worktree-depth redirection), except
+  pointed at =frameworks/ui/pkg/desktop_kit= rather than the archived-pending
+  =ui-kit-private=.
+- *No component migration was needed.* =frameworks/ui/pkg/desktop_kit= was
+  found FULLY POPULATED (tranche 0 already landed on =main= -- 223 tracked
+  files, 3 commits) when this app started, not an empty skeleton -- so
+  building it was pure consumption of the existing copy, not an extraction.
+  Every desktop_kit surface it uses (=desktop_kit_about=,
+  =desktop_kit_settings= incl. =SettingsCategory=/=SettingsCategoryTile=,
+  =desktop_kit_layout='s =AdaptiveLayout=, =desktop_kit_status='s
+  =LedIndicator= family via =GateVerdictChip=, =desktop_kit_theme='s
+  =DeskTheme=/=DeskPalette=, =desktop_kit_widgets='s =Foldable=) already had
+  its own test coverage in =ui/pkg/desktop_kit/test= from tranche 0; nothing
+  new was added there.
+- *State-management boundary held.* =beacon_monitor= uses Riverpod 3
+  (=flutter_riverpod ^3.0.0=) in its OWN =lib/src/state/=, and
+  =frameworks/ui/pkg/desktop_kit='s =pubspec.yaml= was not touched -- the
+  tier-1 =deps-guard= (forbidding riverpod/provider in the kit itself) is
+  therefore still satisfied by construction, not merely by convention.
+- *Verified, not asserted:* =beacon_monitor='s own =make check=
+  (=fmt-check= + =analyze= + =test=) is green -- 105/105 tests passing,
+  =dart format= 0-diff, =flutter analyze= clean of every issue except one
+  documented, worktree-depth-only =path_does_not_exist= warning on the
+  pubspec's own literal path (not a real resolution failure; =pub get= and
+  the real code analysis both correctly use the override) -- plus a full
+  =flutter build linux --release= success and a smoke-launch under Xvfb with
+  no crash. Full detail: =beacon-sim/ui/beacon_monitor/README.org=.
+- *=consumers.yaml= deliberately NOT updated.*
+  [[file:../../go/cmd/pin-monitor/consumers.yaml]] tracks pin governance
+  against =dep_repo: ui-kit-private= specifically (six consumers, all
+  pinning a =path=/sha/tag against THAT repo). =beacon_monitor= depends on
+  =frameworks/ui/pkg/desktop_kit= via a plain path, not a version pin against
+  the old repo -- adding it there would misrepresent what it depends on. No
+  equivalent registry exists yet for direct consumers of the new home; that
+  gap is noted here rather than silently worked around.
+
+** Why this matters for the migration plan
+
+The =ghk_dashboard=/=netroute_manager= tranche-4 pilots (framework-subsumption-design.org
+§5) are still pinned at =ui-kit-private= as of this writing -- their own
+migration has not run yet. =beacon_monitor= is therefore the first REAL evidence
+(not merely the tranche-0 copy's own test suite re-passing in place) that an
+app can resolve, analyze, build, and test cleanly against
+=frameworks/ui/pkg/desktop_kit= as a genuine external consumer. It does not
+substitute for running the =ghk_dashboard=/=netroute_manager= migration itself --
+their own forks and Riverpod-adoption cost are unaffected -- but it retires
+some of the risk in "will a fresh path: consumer actually work here."
+
+* 6. Go — the installer triplication (RESOLVED)
+
+| Source | Lines | Contributed to the shared package |
+|--------+-------+-----------------------------------|
+| =gatehub-kit/cmd/dashboard-installer/installer.go= | 440 | =index.theme= ownership model |
+| =word-bank/cmd/installer/installer.go= | 291 | full-app-dir clean; app-id =.desktop= naming (Wayland) |
+| =voicelab/cmd/installer/installer.go= | 285 | multi-launcher shape |
+
+1,016 lines across three forks → one =Spec=-driven package
+(=frameworks/go/pkg/installer=, commit =721fdf3=) plus ~30 lines of wiring per
+consumer. Test forks: 263 + 398 + 182 = 843 further lines.
+
+Built from the *union of behaviour*, not from the largest fork. Two behaviours
+are in *none* of the three sources:
+
+1. *Symlink target escape guard.* All three checked the *location* of a tar
+   entry; none checked a symlink's *target*, so an archive could plant a link
+   pointing outside the prefix that a later write follows out of the tree.
+2. *=ShareSubdir= traversal validation.* Found *by a test*, not by review: the
+   first implementation used a =filepath.Clean= round-trip, and
+   =Clean("../evil")= returns =../evil= unchanged, so the check never fired.
+
+Both are now pinned by tests. Design detail:
+[[file:../../go/docs/go-framework-design.org]].
+
+*Counting note:* a naive =find= over these repos returns 7,233 lines because
+=.worktree/= copies are included — =gatehub-kit= alone has six worktrees each
+holding the 440-line file. The 1,016 figure counts primary checkouts only.
+Exclude =.worktree/= from every census re-run or the burn-down will look
+7× worse than it is.
+
+* 7. Aggregate
+
+| Surface | Duplicated lines | Status |
+|---------+------------------+--------|
+| Go installers (primary checkouts) | 1,016 + 843 test | *resolved* — shared package landed, no consumer wired yet |
+| *=textloom= ↔ =example/=* | *11,982 / 15,919 across 34 files* | *largest fork; blocks the =ui0= seed decision* |
+| kit↔voicelab same-basename files | 1,844 app-side | pending, tranche A/B |
+| Cross-app widget forks | 1,509 | pending, needs union design |
+| About surfaces | 298 app-side (excl. kit) | pending, pure adoption |
+| App shells | 2,181 | pending, needs =app_kit= |
+| Settings surfaces | ~6,600 app-side | pending, largest and last |
+| task-board ORPHAN | 389 | pending, cheapest pilot |
+
+=voicelab= alone: 29,162 lines across 77 =lib/= files, of which *6,938 (24%)*
+duplicate kit capability. Its test surface is 103 files / 35,596 lines — larger
+than its source, which is why kit todo =b4749c15= forbids pruning tests before
+promoting the code under test: doing it in the other order deletes coverage
+rather than duplication. (That todo also records an OOM from running ~2,656
+tests at once — budget the suite, don't run it whole.)
+
+* Work order implied by the census
+
+Ordered by *risk-adjusted value*, not size:
+
+1. *Byte-identical pair* (203 lines) — zero judgment, proves the loop.
+2. *=task-board= ORPHAN* (389 lines) — pre-written script, no pins, already
+   Riverpod 3.
+3. *About surfaces* (298 lines) — pure adoption, kit component ready.
+4. *STALE kit↔voicelab files* (six of seven) — upgrades; read each diff.
+5. *=romaji_input_buffer= AHEAD* — port delta to kit *first*.
+6. *Cross-app forks* — require union design, so they follow =app_kit=.
+7. *Settings* — largest, most entangled, and gated on =app_kit= existing.
+
+* Source Verification Notes
+
+** Verified claims
+- Byte-identical pairs: ✓ =diff -q= returned no difference for both files.
+- All seven kit↔voicelab line counts and raw diff counts: ✓ =wc -l= + =diff | grep -c
+  '^[<>]'=, run 2026-07-29.
+- =romaji_input_buffer= direction (app larger): ✓ kit 288 vs app 317.
+- Cross-app differing counts: ✓ =diff <(sort A) <(sort B) | grep -c '^[<>]'=.
+- Kit settings-barrel adoption counts (5 adopt / 5 do not): ✓ =grep -rl
+  desktop_kit_settings= per app, =.worktree= excluded.
+- word-bank's own =SettingsStore= at =settings_models.dart:318=: ✓ read
+  directly; ✓ =desktop_kit_settings= grep over its =lib/= returns nothing.
+- Promotion direction for the ORPHAN: ✓ kit commit =af177de= via =git log
+  --diff-filter=A=; ✓ the 2026-07-04 evaluation doc; ✓ Riverpod coupling present
+  in task-board's copy and absent from the kit's.
+- Go installer line counts: ✓ =wc -l= on primary checkouts.
+- =voicelab= totals (29,162 / 77 files; 103 test files / 35,596 lines): ✓
+  measured in the prior session; the 6,938-line duplicate figure is the sum of
+  the per-file overlaps enumerated above plus its settings/theme/chrome forks.
+
+** Estimated / bounded claims
+- The "~6,600 app-side settings lines" row is a *sum of whole files* whose
+  purpose is settings. Parts of each file are genuinely app-specific
+  (=voicelab='s voice configuration, =word-bank='s lexicon options), so it is an upper
+  bound on what consolidation can remove, not a target.
+- "6,938 lines (24%) duplicate kit capability" for =voicelab= is likewise
+  file-granular and therefore an upper bound.
+- Fork *cause* classifications are inferences from dates, sizes and direction.
+  STALE/AHEAD are measured; ORPHAN is documented; ABSENT is verified by the kit
+  tree. They are labelled so a reviewer can disagree with a specific row.
+
+** Not verified
+- Whether each STALE deletion is behaviour-preserving. It is *not* expected to
+  be — that is the point of the STALE label. Only reading each diff and running
+  the app's suite settles it.
+- The test-surface duplication is not censused here; blocked behind =b4749c15=.
+
+* Cross-References
+
+- Inventory and the two required tables: [[file:flutter-app-inventory.org]]
+- Consolidation design and tranche order: [[file:framework-subsumption-design.org]]
+- Go side: [[file:../../go/docs/go-framework-design.org]]
+- Session trace: [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Prior art, do not re-derive:
+  [[file:~/go/src/github.com/davidwalter0/task-board/docs/desktop-kit-gap-evaluation.org]]
+- Related kit todos: =fb8c09cb= (shared =PreeditSession=), =b4749c15= (test
+  duplication / promote before pruning), =62419295= (pin governance).
+
+* Footnotes
+
+[fn:worktree] Always pass =-not -path '*/.worktree/*'= when re-running these
+counts. Six =gatehub-kit= worktrees inflate the installer census 7×, and the
+same hazard applies to every =find= in this document.

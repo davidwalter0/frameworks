@@ -1,0 +1,415 @@
+:PROPERTIES:
+:ID:       frameworks-installer-consumer-report
+:END:
+#+title: installer consumer report — voicelab as first consumer of pkg/installer
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-08-07
+:END:
+
+** Status
+=go/cmd/example-installer= is wired, builds, and has been verified against a
+real packaged voicelab tree (real =voicelab= binary + real, if slightly stale,
+Flutter release bundle) installed into and removed from a throwaway prefix.
+=make check= is green. Todo =2e277687=.
+
+*2026-08-07: the =index.theme= defect reported in §6 IS FIXED, and the test
+blind spot that hid it is closed.* This document asserted "reported, not fixed"
+for over a week after the repair landed — see §6.0. Deduplication is still
+UNREALIZED: =voicelab/cmd/installer= remains present and is still what
+=scripts/package-linux.sh= builds.
+
+** Completed
+- [X] Spec + build-tag payload split + =main()= written (owned paths only)
+- [X] =make build= / =make check= green in =go/=
+- [X] Spec-vs-fork behavioural diff, itemized
+- [X] Real-artifact install/uninstall exercised in a throwaway prefix
+- [X] One defect found in =pkg/installer= (reported below)
+- [X] 2026-08-07: that defect FIXED — marker written on both authorship paths —
+  and covered by three tests including the previously-unreachable branch (§6.0)
+
+** Next Steps
+- [ ] Parent decides on the desktop-filename migration wrinkle for hosts with
+  an existing old-fork install (see §3 item 3). Still open; it is the one
+  remaining blocker to retiring the fork.
+- [ ] Fork retirement (=voicelab/cmd/installer=, 308 impl + 182 test lines) —
+  still NOT done. Until it is, the family carries FOUR implementations of this
+  installer rather than three, which is the "promotion without adoption doubles
+  the surface" pattern reproduced.
+
+* 1. Wiring line count vs the ~30-line claim
+
+=go-framework-design.org= §2 estimates "roughly 30 lines of wiring per
+consumer," not yet measured against a wired consumer. Measured here for the
+first time:
+
+| File | Total lines | Non-comment / non-blank lines |
+|------+-------------+--------------------------------|
+| =main.go= (Spec + =main()=) | 40 | 17 |
+| =payload_with.go= (build-tag split) | 12 | 3 |
+| =payload_without.go= (build-tag split) | 9 | 2 |
+| *Total* | *61* | *22* [fn:linecount] |
+
+The design doc's ~30-line estimate is closest to =main.go= alone (the only
+file with any actual per-app design content — the two payload-split files are
+fixed boilerplate, identical in every consumer down to the comment text). Read
+either way the estimate holds: 17 lines of real per-app code, or 22 once the
+boilerplate is counted, against a ~30-line target. =make build= produces
+=bin/example-installer= from these three files with no other new files
+outside the owned paths.
+
+* 2. Build/check gate
+
+#+begin_src text
+fmt-check OK
+0 issues.   (golangci-lint)
+go vet ./...
+No vulnerabilities found.   (govulncheck)
+go test ./...
+?   .../cmd/example-installer   [no test files]
+ok  .../pkg/installer             (cached)
+TOTAL coverage: 73.9%   (pkg/installer 74.2%, cmd/example-installer 0.0%)
+#+end_src
+
+=cmd/example-installer= has no tests of its own — it is pure wiring (a
+=Spec= literal + a one-line =main()=), and the behaviour under test is
+=pkg/installer='s, already gated at 74.2%. This is the same shape =run.go='s
+own doc anticipates ("=Run= is the whole =main()= of a consuming installer").
+Plain =go build ./...= and =go vet ./...= (no tags) both succeed with **no**
+=payload.tar.gz= present anywhere in the tree — NFR-2 confirmed, not assumed.
+
+* 3. Spec-vs-fork behavioural diff (itemized)
+
+Diffed against
+=voicelab/cmd/installer/installer.go= (285 lines, read-only reference).
+
+| # | Behaviour | Fork | This Spec | Verdict |
+|---+-----------+------+-----------+---------|
+| 1 | Launchers | =vl -> bin/vl=, =voicelab-ui -> voicelab-ui= (root of app dir), each with a hand-written blurb line | Same two =Launcher{Target,Name,Blurb}= entries | *Match* |
+| 2 | Clean before extract | =CleanSubdirs{"bin","gui"}= only (hand-written =for _, sub := range []string{"bin","gui"}=) | *Default* =CleanAppDir= (whole app dir) | **Deliberate improvement** — see below |
+| 3 | =.desktop= basename | Hardcoded =voicelab-ui.desktop= (source basename, unchanged) | *Default* =DesktopByAppID= → =com.davidwalter0.exampleUi.desktop= | **Deliberate improvement** — see below |
+| 4 | Icon rels | Hardcoded =256x256/apps/<id>.png= + =scalable/apps/<id>.svg= | =DefaultIconRels(appID)= — identical paths | *Match* |
+| 5 | Post-install report format | Custom "CLI :" / "GUI :" labels | Generic per-launcher "=<name> : <path>  <blurb>=" from =pkg/installer='s =report()= | *Cosmetic difference only* |
+| 6 | Flags (=--prefix=, =--uninstall=, =--version/-V=) | Hand-parsed via =pflag= in =main= | Identical flags via =installer.Run= | *Match* |
+| 7 | =DefaultPrefix= / =OnPath= | =~/.local=, falls back to =/usr/local= | Same, from =pkg/installer= | *Match* |
+
+** Item 2 — CleanMode, why the default is the right call here
+
+The fork's subdir-only clean is *exactly* the pattern =spec.go='s own
+=CleanSubdirs= doc warns about: "word-bank adopted [=CleanAppDir=] after a
+layout change left stale top-level entries [...] stranded by the subtree-only
+clean." voicelab' fork cleans only =bin/= and =gui/=, so any top-level file
+whose *name* changes between releases (=NOTICE=, an icon, a launcher
+wrapper) would survive alongside the new one indefinitely. Taking the package
+default (=CleanAppDir=) closes that class of bug before it happens, at zero
+behavioural cost today — the current payload's top-level file set is stable,
+so a full clean and a subdir clean currently produce an identical installed
+tree (verified: see §4).
+
+** Item 3 — DesktopNaming, verified against the GTK application id
+
+=DesktopByAppID= is not a cosmetic pick. Verified (not assumed) that this
+app's GTK =APPLICATION_ID= (=ui/voicelab-ui/linux/CMakeLists.txt:10=) is
+=com.davidwalter0.exampleUi= — identical to =Icon== and =StartupWMClass== in
+the shipped =.desktop= template. The fork installs the entry as
+=voicelab-ui.desktop=, which does *not* match the application id; per
+=spec.go='s documented Wayland finding (window-icon resolution keys off the
+installed =.desktop= *filename*, not its content), the fork's naming is the
+exact bug word-bank already fixed elsewhere in this family. Switching to the
+package default closes it here too. Confirmed empirically: the real install
+in §4 produced =com.davidwalter0.exampleUi.desktop=, with =Icon== and
+=StartupWMClass== inside it unchanged and already matching.
+
+*Operational wrinkle this creates* (flagging, not fixing — outside owned
+paths): a host with an *existing* install from the old fork has a stale
+=voicelab-ui.desktop= in =$PREFIX/share/applications/=. This new installer's
+=Uninstall= only removes =desktopTarget()= (the app-id name), so it will not
+clean up that old file. A first real cutover should either =rm= the old name
+once, or the parent should decide whether =pkg/installer= ought to know about
+a "previous name" to clean. Recorded for the parent, not acted on here.
+
+* 4. What was verified against a real artifact vs what stays synthetic-only
+
+This is the honest open risk =go-framework-design.org= §2 names: "the package
+is proven against synthetic payloads only." Closed partially here.
+
+** Exercised for real
+- *Real static =voicelab= CLI*: built with
+  =CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath ./cmd/vl= from
+  the =voicelab= source tree, output written straight to a scratch dir
+  (never into =voicelab/bin/=) — confirmed via =file= it is a real, statically
+  linked ELF binary, and confirmed via =git status --porcelain= in
+  =voicelab= before and after that the checkout was never touched.
+- *Real Flutter GUI bundle*: the pre-existing release bundle at
+  =voicelab/ui/voicelab-ui/build/linux/x64/release/bundle= (92 MiB, real
+  =voicelab_ui= ELF + =lib/*.so= + =data/=) was copied — read-only — into the
+  scratch stage; it was **not** rebuilt. *Caveat, stated plainly*: this bundle
+  is dated 2026-07-14, while the last commit touching
+  =ui/voicelab-ui/lib/= is =9dd1a8d= (2026-07-28) — the bundle is
+  ~2 weeks stale relative to source. This does not affect what was actually
+  under test (the installer's file layout, symlink, desktop, and icon logic
+  are indifferent to the GUI binary's content), but the GUI binary itself was
+  not rebuilt fresh, and that is recorded rather than glossed over.
+- *Real payload*: the CLI + bundle + hand-staged launcher wrapper, =.desktop=
+  template, icons and =NOTICE= were tarred into a real =payload.tar.gz=
+  (46 MiB), matching =voicelab/scripts/package-linux.sh='s own staging steps
+  (reproduced by hand rather than running that script, precisely so nothing
+  wrote into the =voicelab= checkout — the script itself writes to
+  =$ROOT/bin= and =$ROOT/dist=, which are gitignored but still inside that
+  repo's working tree).
+- *Real =-tags withpayload= build*: the payload was copied in, embedded, and
+  removed again — =go/cmd/example-installer/payload.tar.gz= does not exist
+  in the owned tree after this run (=git status --porcelain= confirms only
+  the three source files are untracked-new).
+- *Real install*, to a scratch prefix outside the repo (never =~/.local=,
+  never =/usr/local=):
+  - launchers resolved: =bin/vl -> share/voicelab/bin/vl=,
+    =bin/voicelab-ui -> share/voicelab/voicelab-ui=
+  - =vl --help= ran and printed real usage output from the real binary
+  - =.desktop= landed as =com.davidwalter0.exampleUi.desktop= with correct
+    =Icon== / =StartupWMClass== / rewritten =Exec== (=__PREFIX__= substituted)
+  - both icon files landed in =share/icons/hicolor/{256x256,scalable}/apps/=
+  - =gtk-update-icon-cache= is present on this host and ran (produced
+    =icon-theme.cache=), exercising the one branch the design doc flagged as
+    needing "a real desktop tool present" — that tool exists here and the
+    real path ran successfully.
+- *Real uninstall*, immediately after: app dir, both launchers, the =.desktop=
+  entry and both icon files were removed.
+
+** Found only by testing the real artifact (not by unit tests)
+
+*See "Defect Found" below* — =Uninstall= does not remove the icon theme's
+=index.theme= (or the now-empty theme directory scaffolding) on a host that
+already has a system hicolor theme, which is the common case and is exactly
+what this real, non-synthetic prefix exercised. =installer_test.go= (line
+~100) always points =SystemHicolorIndexTheme= at a deliberately-absent path,
+so its suite only ever exercises the *other* branch (write-minimal +
+=IconThemeMarker=). This gap could not have been found without installing
+against a real system that has a real =/usr/share/icons/hicolor/index.theme=
+(this host does: =/usr/share/icons/hicolor/index.theme=, dated 2018,
+55507 bytes).
+
+** Stays synthetic-only / not exercised
+- The GUI binary itself was not launched (no display server assumed
+  available in this environment, and the task explicitly scoped verification
+  to install/uninstall, not a live GUI smoke test).
+- No AppImage / linuxdeploy packaging path was exercised — voicelab does not
+  use one; see §5.
+- Fresh =flutter build linux --release= was not run (used the existing
+  bundle instead — see the staleness caveat above).
+- macOS / Windows install paths — out of scope, this family targets Linux
+  first.
+
+* 5. libdartjni.so — recorded, not implemented
+
+voicelab' Flutter release bundle *does* ship
+=lib/libdartjni.so= (128,328 bytes) — confirmed present in the real bundle
+used for §4's verification, same file word-bank's
+=scripts/lib-appdir.sh:92= (=rm -f "$appdir/usr/bin/lib/libdartjni.so"=)
+strips before AppImage packaging.
+
+*Whether voicelab needs the strip today: no, for a different reason than
+word-bank has it.* word-bank's comment is explicit about *why* it strips:
+"never loaded on Linux; phantom libjvm dep" — that dependency chase happens
+inside =linuxdeploy=, which walks the AppDir's =.so= files and gets confused
+by the Android-only JNI shim. voicelab does not use =linuxdeploy=/AppImage
+at all — its distribution path is =pkg/installer='s tar-extract, which never
+inspects =.so= dependencies. So the specific failure mode the strip exists to
+avoid cannot occur on voicelab' current path.
+
+The only cost of leaving it in is size: 128 KiB inside a 46 MiB payload
+(~0.28%), negligible. If =pkg/installer= or a future AppImage path is ever
+made to own stripping uniformly (as the design doc's "Honest remaining risk"
+suggests it eventually should), voicelab would benefit purely on
+cleanliness grounds, not correctness — recorded for that future work, not
+acted on here since it would mean touching =pkg/installer=, which is
+out of scope for this consumer task.
+
+* 6. Defect found in pkg/installer — FIXED 2026-08-07
+
+** 6.0 Resolution (read this before the original report below)
+
+*The defect described in §6.1 is fixed, and the reason it was findable only by
+a real-artifact run is fixed too.*
+
+*The code fix.* =icons.go='s =ensureIconTheme= now writes =IconThemeMarker= on
+BOTH authorship paths — the system-copy branch and the synthesized-fallback
+branch — because the installer authored the file in both cases. Previously the
+marker was written only after the fallback, so on any host WITH a real
+=/usr/share/icons/hicolor/index.theme= (i.e. every real desktop) the copy
+succeeded, no marker was written, and =Uninstall= then declined to remove a
+file it had itself created. The current source carries that reasoning inline,
+in past tense, at the point of the fix.
+
+=removeWrittenIconTheme= additionally gained a =hasRemainingIcons= guard, so a
+shared prefix holding another application's icons keeps its theme index even
+when the marker says the file is ours.
+
+*The test fix, which matters more.* The original report's sharpest observation
+was that =installer_test.go= redirected =SystemHicolorIndexTheme= to a
+deliberately-absent path in EVERY test, so the copy-success branch — the common
+case — had no coverage at all and the suite could not have caught this. Four
+tests now cover the four outcomes:
+
+| test | branch |
+|------+--------|
+| =TestUninstallRemovesOwnIconTheme= | fallback-written index.theme is removed |
+| =TestUninstallRemovesCopiedSystemIconTheme= | COPY-SUCCESS path: copied index.theme is removed |
+| =TestUninstallKeepsForeignIconTheme= | a pre-existing/foreign index.theme survives |
+| =TestUninstallKeepsIconThemeWhenOtherIconsRemain= | =hasRemainingIcons= guard holds |
+
+=TestUninstallRemovesCopiedSystemIconTheme= points =SystemHicolorIndexTheme= at
+a stand-in file with content DISTINCT from the fallback template, then asserts
+the installed =index.theme= is that content — so if the copy branch ever stops
+running, the test fails with "copy-success path did not run" rather than
+passing vacuously against the fallback. That assertion is what makes it
+load-bearing rather than merely present.
+
+*Process note worth keeping.* This document said "reported, not fixed" for over
+a week after the repair landed, and its Next Steps still asked the parent to
+decide whether to fix it. A report that outlives its subject is not neutral —
+it invites either re-doing settled work or distrusting the code. The finding
+below is retained verbatim because it is *why* those three tests exist.
+
+** 6.1 The original report (2026-07-29, retained as history)
+
+*=Uninstall= does not remove a copied (as opposed to fallback-written)
+=index.theme=, nor the resulting empty theme-directory scaffolding, when the
+host already has a real system hicolor theme.*
+
+Mechanism (read from =icons.go=, confirmed by the real run in §4):
+- =ensureIconTheme= (called by =Install= via =refreshIconCache(..., true, ...)=)
+  checks whether =theme/index.theme= exists; in a fresh prefix it does not, so
+  it tries =CopyFile(SystemHicolorIndexTheme, dst, ...)=. On any host with a
+  real =/usr/share/icons/hicolor/index.theme= (this one included — Mar 2018,
+  55,507 bytes), that copy *succeeds*, and the function returns *without*
+  writing =IconThemeMarker=. The marker is written *only* on the fallback
+  path (system file absent → write the minimal built-in template).
+- =Uninstall= → =removeWrittenIconTheme= checks *only* for =IconThemeMarker=;
+  finding none, it treats the =index.theme= as "not ours to remove" and
+  leaves it — along with the (now empty) =256x256/apps=, =scalable/apps=,
+  =hicolor/= directories and =icon-theme.cache= — behind after uninstall.
+- =installer_test.go:100-102= always redirects =SystemHicolorIndexTheme= to a
+  deliberately-nonexistent path before testing =ensureIconTheme=
+  /=removeWrittenIconTheme=, so the test suite only ever exercises the
+  fallback+marker branch. The copy-succeeds branch — which is the *common*
+  case on any real desktop Linux host — has no test coverage for its
+  uninstall behaviour, and this is exactly why it took a real prefix on a
+  real host to surface.
+
+*Observed, concretely* (this run): after =Install= then =Uninstall= into a
+throwaway prefix that held only this one app, =find $PREFIX= after uninstall
+still listed =share/=, =bin/=, =share/applications/=, =share/icons/hicolor/=,
+=hicolor/index.theme=, =hicolor/256x256/=, =hicolor/256x256/apps/=,
+=hicolor/scalable/=, =hicolor/scalable/apps/= — i.e. the prefix did *not*
+fully return to its prior (nonexistent) state; it returned to "empty
+directory tree + one leftover =index.theme= file" rather than gone.
+
+*Whether this is a bug or a documented tradeoff*: the code's own comment
+("never touch someone else's theme index") is a *correct* policy when the
+=index.theme= genuinely belongs to another application sharing the prefix.
+The gap is that the ownership test (=IconThemeMarker=) can't distinguish
+"someone else's theme" from "our own copy of the system theme, into a prefix
+that otherwise held only this one app" — those are observationally identical
+from =Uninstall='s point of view today. Reporting for the parent to decide,
+per this task's instructions not to patch =pkg/installer=; three other forks
+are pending migration onto it and the fix (if any) affects all of them.
+
+* 7. Performance — measured only
+
+All numbers below are measured on this host during §4's real
+install/uninstall run (=/usr/bin/time -v=, single run each — not averaged
+over repeated runs, so treat as one data point, not a benchmark).
+
+| Metric | Value |
+|--------+-------|
+| Installer binary size (=-tags withpayload=, stripped, =-trimpath=) | 50,348,194 bytes (~49 MiB via =du=) |
+| Embedded payload (=payload.tar.gz=) | ~46 MiB |
+| Staged tree, uncompressed | 109 MiB |
+| Install wall-clock (extract + symlinks + desktop + icons + =gtk-update-icon-cache=) | 3.88 s |
+| Install peak RSS | 53,808 KiB (~52.5 MiB) |
+| Uninstall wall-clock | 0.05 s |
+| Uninstall peak RSS | 5,172 KiB (~5.05 MiB) |
+
+No breakdown of the 3.88 s install between extraction, icon copy, and
+=gtk-update-icon-cache= was measured separately — the number is
+=Install()='s wall-clock end to end. Given the payload is 92 MiB of Flutter
+bundle content, extraction plausibly dominates, but that is not measured and
+is not claimed as fact here.
+
+* Source Verification Notes
+
+** Verified claims
+- Wiring line counts (61 total / 27 non-comment across 3 files): ✓ =wc -l= and
+  a =grep -v= comment/blank filter, run directly against the committed files.
+- =make build= / =make check= results (fmt-check, lint 0 issues, vet clean,
+  govulncheck clean, 20 tests in =pkg/installer=, 73.9% total coverage): ✓ ran
+  =make check= in =go/= twice (before and after real-artifact verification),
+  both green, output captured above.
+- GTK =APPLICATION_ID = com.davidwalter0.exampleUi=: ✓ read directly from
+  =voicelab/ui/voicelab-ui/linux/CMakeLists.txt:10=.
+- Fork's =.desktop= basename and =CleanSubdirs= behaviour: ✓ read directly
+  from =voicelab/cmd/installer/installer.go= (lines 71-96, 128-143).
+- Real install/uninstall behaviour, file layout, launcher targets,
+  =.desktop= filename and contents, icon paths: ✓ observed directly via
+  =find=, =readlink -f=, =cat= against the real throwaway prefix.
+- =libdartjni.so= present in the voicelab bundle, 128,328 bytes: ✓
+  =ls -la= against the real release bundle.
+- word-bank's =libdartjni.so= strip rationale: ✓ read directly from
+  =word-bank/scripts/lib-appdir.sh= lines 90-92 (read-only; not modified).
+  Note: an earlier grep in this task's brief cited
+  =word-bank/lib-appdir.sh:92=; the file is actually at
+  =word-bank/scripts/lib-appdir.sh= — corrected here from directly reading
+  the tree, not assumed from the brief.
+- =installer_test.go= always redirects =SystemHicolorIndexTheme= to an absent
+  path: ✓ read directly, lines 100-102.
+- Bundle staleness (2026-07-14 bundle vs 2026-07-28 last =lib/= commit): ✓
+  =stat= on the bundle binary vs =git log -1= on =ui/voicelab-ui/lib=.
+- Performance numbers in §7: ✓ =/usr/bin/time -v= output from the actual
+  install/uninstall runs, quoted verbatim (not recomputed or rounded beyond
+  the unit conversions shown).
+- =voicelab= checkout was never modified by this verification: ✓
+  =git status --porcelain= run in that checkout before staging and again
+  after the build, both empty.
+
+** Estimated claims
+- "extraction plausibly dominates the 3.88s" (§7): explicitly marked as
+  unmeasured speculation and not relied on elsewhere in this report.
+
+** Not verified
+- Whether the live GUI (=voicelab-ui=) actually renders/launches correctly
+  from the installed prefix — not exercised (no display server assumed
+  available; task scoped verification to install/uninstall).
+- Whether the =index.theme= defect (§6) also reproduces identically on a
+  packaging host without a pre-existing system hicolor theme, or on
+  word-bank/ghk's own specs — not tested against those specs, only reasoned
+  from reading the shared code path they'd all go through.
+
+* Glossary
+- payload :: the gzip tar of a staged install tree, embedded via =go:embed=
+  behind the =withpayload= build tag.
+- =Spec= :: the per-application description (=go/pkg/installer/spec.go=) that
+  turns the shared installer into one app's installer.
+- app-id :: the reverse-DNS identifier (=com.davidwalter0.exampleUi=) that
+  must match across the GTK application id, =.desktop= =Icon==/=StartupWMClass==,
+  and the hicolor icon basename.
+- =IconThemeMarker= :: the sentinel file (=.frameworks-wrote-index-theme=)
+  =pkg/installer= uses to decide whether it is safe to remove =index.theme=
+  on uninstall.
+
+* Cross-References
+- Design doc this task's estimate and open risk come from:
+  [[file:go-framework-design.org]]
+- Package under test: [[file:../pkg/installer/spec.go]],
+  [[file:../pkg/installer/install.go]], [[file:../pkg/installer/icons.go]]
+- Read-only fork reference (not modified):
+  [[file:~/go/src/github.com/davidwalter0/voicelab/cmd/installer/installer.go]]
+- Session trace:
+  [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+
+* Footnotes
+[fn:linecount] 17 + 3 + 2 = 22 non-comment/non-blank lines, via
+=grep -vE '^\s*(//|$)' main.go payload_with.go payload_without.go | wc -l=
+run per-file and summed; reproducible directly against the committed files.

@@ -1,0 +1,342 @@
+:PROPERTIES:
+:ID:       frameworks-tiers-vs-packages-recommendation
+:END:
+#+title: Tiers vs N packages — the recommendation, on re-census evidence
+#+date: 2026-07-30
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-30
+:END:
+
+** Status
+Recommendation ready for decision (todo =f57991e5=). Built on the ast-backed
+re-census (=ui/docs/census2/=, 11 repos, commit =579ed43=), not on the
+grep-based first census, which the re-census corrected in six places.
+
+** Recommendation in one line
+*N packages, staged, Go first* — and do NOT build =app_kit= as designed.
+
+** Next Steps
+- [ ] Decide (=f57991e5=)
+- [ ] If yes: the precondition in §5.0 blocks three of the best candidates and
+  is a change to *another repo*, so it needs its own approval
+
+* 0. Two things this document must not conflate
+
+*Added 2026-07-30 after conflating them.*
+
+*=pkg/= not =internal/= is an ORGANIZING DIRECTIVE.* It is a layout convention
+that removes the toolchain's compile-time wall so that code *can* be shared. It
+is future-facing groundwork for DRY and for reorganization. It applies
+universally and needs no per-case justification.
+
+*What to share, and whether to adopt an existing module, is a SEPARATE DECISION
+made per capability on evidence.*
+
+Conflating them produces two opposite errors, and this document has made both:
+
+| error | shape | where |
+|-------+-------+-------|
+| treat the layout rule as optional | "moving =internal/= → =pkg/= is a precondition that can be declined" | §5.0, corrected |
+| treat the layout rule as an adoption mandate | "a module exists under =pkg/= with N consumers, therefore adopt it" | this section exists to prevent it |
+
+*=pkg/x= existing somewhere does not make =x= a foundation module.* =pkg/= means
+"not walled off". Nothing more. A repo can have thirty =pkg/= directories that
+are all correctly private-by-convention and none of which anyone should import.
+
+So a consumer count is *evidence to weigh*, not a verdict:
+
+- =go-cfg= having 6 consumers means the config capability has prior art worth
+  evaluating against the ~6,600 hand-rolled settings lines the census measured.
+  It does not mean =go-cfg= is the answer.
+- =pkg/installer= was correct on its own merits — three measured forks totalling
+  1,016 lines, no existing home. Discovering =go-flag= afterwards does not make
+  it wrong.
+- =fs-relay/pkg/backend='s 17 implementors make it a strong candidate for the
+  filesystem capability. That is still a judgement about fit and cost, not an
+  automatic consequence of the count.
+
+The default question is not "what do I build here" and it is not "what do I
+adopt instead". It is *"what does this capability need, and what already exists
+that meets it"* — answered per capability, with the layout convention holding
+throughout regardless of the answer.
+
+* 1. What is actually being decided
+
+Not folder layout. *What a version number covers.*
+
+The standing design (=framework-subsumption-design.org= §2) is three tiers:
+=desktop_kit= (state-agnostic primitives), =app_kit= (Riverpod app shell),
+=ui0= (oracle). The counter-proposal is N packages plus two mechanically
+checkable rules — no package may depend on a state-requiring package unless it
+requires one too; no cycles — plus one acceptance consumer.
+
+* 2. The case for N packages, on measured evidence
+
+** 2.1 Version coupling is real, measured, and already costing
+
+=desktop_kit= is *one pubspec, version 0.2.4, 23 barrel entrypoints, 4 non-SDK
+dependencies* (re-census, =ui-kit-private.org=). A barrel is a namespace
+boundary — not a dependency boundary and not a version boundary.
+
+Consequence, concrete: the LED ticker fix =e321e56= sits on =main= and in no
+tag. Shipping it means shipping =v0.2.5=, which means re-validating the
+2,768-line =emacs_buffer= engine, the Anthy IME and the config harvester. Six
+consumers sit on =v0.2.3=.
+
+*Pin governance (=62419295=) is therefore not an independent problem.* It is a
+symptom of one version covering 23 unrelated capabilities. An abstraction that
+dissolves a problem filed separately is usually the right one — this is the
+strongest single argument on either side.
+
+Three tiers does not fix it. =status/led_indicator= (168 lines) and
+=editor/emacs_buffer= (2,768) both land in tier 1. *Three tiers produces three
+monoliths.*
+
+** 2.2 Cross-language contracts must version together — and a tier cannot say so
+
+The re-census named the contracts precisely, which the first census could not:
+
+| pair | contract | verified |
+|------+----------+----------|
+| mountbridge | =org.mountbridge.Daemon1= at =/org/mountbridge/Daemon1= — 29 methods, 6 signals | 27/29 methods + 6/6 signals paired 1:1 Go↔Dart |
+| mail-sweep | JSON-RPC: 12 methods + =scan/progress= notification + =$/cancelRequest= | exact match, =handlers.go= ↔ =gmail_repository.dart= |
+| voicelab (desktop) | subprocess + JSON, =voicelab= CLI ↔ =VoicelabCli= facade | structural |
+| voicelab (Android) | gomobile =.aar= + =MethodChannel('voicelab/backend')= | 18 methods, 1:1 verified |
+| notekeep | gomobile bridge, =mobile/notekeep.go= | present |
+
+A Go server and its Dart client are *two ends of one wire*. If they version
+apart, the wire breaks. *Nothing in a three-tier model can express "these two
+packages, in different languages, share a contract"* — tiers describe opinion
+level. Packages with a shared version can.
+
+This argument did not exist before the re-census. It is now the second
+strongest.
+
+** 2.3 Dependency profiles are disjoint — verified, not assumed
+
+| package/area | dependency | who else needs it |
+|--------------+------------+-------------------|
+| kit core | 4 non-SDK deps total | — |
+| mountbridge Dart client | =dbus ^0.7.10= | *nobody* — the only pubspec in the family declaring it |
+| netroute | gRPC + protobuf | 1 (voicelab uses gRPC via the Google TTS SDK, different surface) |
+| gatehub-kit | prometheus + otel | *1 — itself* |
+
+Forcing an app that speaks JSON-RPC over stdio to take protobuf because both
+live in "tier 1" is precisely the coupling that stranded six consumers on
+=v0.2.3=.
+
+** 2.4 The two-consumer rule needs package granularity to be actionable
+
+Measured consumer counts now exist, and they span two orders of magnitude:
+
+| capability | consumers | measured how |
+|------------+-----------+--------------|
+| subprocess / process supervision | 9 of 11 repos | transport survey, corrected |
+| gomobile Go↔Dart bridge | *2* (voicelab, notekeep) | visible only at synthesis |
+| D-Bus service + client | 2 repos, 1 reusable impl | =org.mountbridge.Daemon1= |
+| =observe/= metrics | *1* | =ast__callers-of= on every constructor |
+| Dart D-Bus client | 1 | only =dbus= pubspec |
+
+A tier cannot hold "this has 1 consumer, leave it" *and* "this has 9, hoist it"
+— both would land in the same tier. A package can, because admission is
+per-package.
+
+* 3. The case against, stated at full strength
+
+** 3.1 Release overhead is recurring and real
+N pubspecs to version, tag and release. This is the genuine cost and it does not
+amortise.
+
+** 3.2 The workspace mechanic is unproven HERE
+Dart 3.12.2 supports =resolution: workspace=, but *zero repos in this family use
+it*. That is a spike, not an assumption.
+
+** 3.3 CI does not exist
+1 of 12 repos has any (=17a7476c=). N packages multiplies an already ungated
+surface. Splitting before gating means N times the unenforced boundaries.
+
+** 3.4 THE NEW ONE — the Dart instrument cannot plan a Dart split
+
+The re-census found =ast__outline= has two silent defects on Dart:
+
+- *Truncation.* =notekeep/settings_screen.dart=: 1,667 lines, 21 top-level
+  classes, outline reports *2*. Verified first-hand. Not a visibility filter —
+  it drops public classes at lines 886, 1342, 1425.
+- *Blind spot.* The tags engine tracks only class/enum/typedef, so files whose
+  top level is functions/providers return =null=.
+
+Scale: *32% of Dart lib files* in textloom and notekeep; 43/124 in word-bank.
+
+*A package split is a decision about which declarations move together.* Planning
+one with an instrument that silently omits a third of the declarations is how a
+split goes wrong in a way nobody notices until it ships. This is a decisive
+argument for *not* splitting the Dart side yet — and it did not exist until the
+re-census produced it.
+
+* 4. Where the standing design was refuted
+
+Recorded so the decision is not re-litigated later:
+
+- *=app_kit='s premise was inverted.* Each recurring shape is (state-agnostic
+  widget) + (provider/persistence tail). The kit shipped the widget for four of
+  five shapes and the tail for *none*, so every app wrote a tail anyway. Four of
+  the five shapes in §2 of the subsumption design are mis-tiered.
+- *The adoption gradient survives, weakened.* =AdaptiveLayout= = 8 required
+  params confirmed, with zero adopters outside its own origin. But my =SpanHost=
+  "18" was a counting artifact — =grep -c 'required '= over a whole file summing
+  four classes (6+7+4+1); the real figure is *6*, and only =SpanHost= is
+  instantiated outside its file. Direction holds; magnitude was overstated.
+- *=ui0= narrows from adoption mechanism to regression gate.* The kit had a
+  12-page gallery and it did not move adoption. =example/= is now retired
+  (=b49916e=), so this is moot until replacement tooling exists.
+
+* 5. The recommendation
+
+*N packages — staged, Go first, Dart last.*
+
+The reasoning is not that N packages is elegant. It is that *the Go side can be
+verified today and the Dart side cannot.*
+
+** 5.0 =internal/= → =pkg/= — required, not optional
+
+*An earlier revision of this section was wrong and is corrected here.* It framed
+this as a "precondition needing its own approval" that "can run in parallel or be
+declined", and it sized the problem at 2,525 LOC. Both were wrong, in the same
+direction: they treated a standing rule as an open question and scoped it to the
+three packages I happened to have named.
+
+The house Go convention is not ambiguous:
+
+#+begin_quote
+*Never create an =internal/= directory.* The toolchain enforces compile-time
+privacy on =internal/=, which breaks sharing packages across my other modules.
+#+end_quote
+
+The stated exception — a project that already contains =internal/= may keep it —
+is not a licence to *plan around* the blocker while consolidating. Treating it as
+optional is how the failure propagates: every reuse candidate behind that wall
+gets re-implemented in the consuming repo instead, which is the exact pattern
+this whole consolidation exists to stop.
+
+*Measured scope, and it is much larger than I said:*
+
+| repo | =internal/= Go LOC | packages | share of that repo's Go |
+|------+--------------------+----------+-------------------------|
+| mountbridge | *27,258* | 19 | *≈75% of 36,373* |
+| task-board | 3,584 | 5 | ≈84% of 4,257 |
+
+mountbridge =internal/= packages by size: =fs= 2503, =syncd= 1532, =drive= 1431,
+=cache= 1361, =dbussvc= 1127, =localcache= 722, =sync= 623, =auth= 392,
+=config= 336, =upload= 329, =pin= 326, =sleepwatch= 289, =update= 221,
+=integration= 211, =systemd= 200, =dedup= 159, =notify= 153, =drivename= 41,
+=version= 13.
+
+task-board: =api= 1230, =service= 917, =domain= 684, =repository= 594,
+=config= 159.
+
+So *three quarters of the family's most Go-dominant repo is compile-time walled
+off from every sibling module*, not the 2,525 lines I reported. The D-Bus
+service is simply the candidate I had already named; the wall is around
+everything.
+
+*=frameworks/go= is clean* — verified, =pkg/= only, no =internal/= anywhere. The
+failure was not propagated into the new module. This section is about not
+designing around it in the old ones.
+
+*Action:* =internal/= → =pkg/= in mountbridge and task-board. It is a mechanical move
+plus import rewrites, it is a change to those repos so it lands on their own
+feature worktrees, and it should be scheduled as ordinary work rather than
+held as a gate on the packaging decision.
+
+** 5.1 Stage 1 — Go packages with measured ≥2 consumers
+
+Verifiable today: Go has a working deep tier, and the consumer counts are
+ast-established rather than inferred.
+
+| package | consumers | note |
+|---------+-----------+------|
+| =pkg/installer= | 3 forks + 1 wired | *landed* (=721fdf3=, consumer =2e277687=) |
+| =pkg/procsup= — subprocess supervision | 9 | the kit's 154-line =host_process= seam is the right shape, nowhere near the size |
+| =pkg/gomobile-bridge= | 2 | voicelab + notekeep; notekeep is decommissioning, so verify voicelab alone justifies it before building |
+| =pkg/dbussvc= | 2 | *gated on §5.0* |
+
+*Explicitly NOT hoisted:* =observe/= — one production consumer, measured. Leave
+it in =gatehub-kit= and import in place. This reverses a reversal: my original
+call was right, my "flip" was wrong twice (netroute has no prometheus at
+all, and sharing a dependency is not consuming a package).
+
+** 5.2 Stage 2 — ONE Dart package, as a mechanics proof
+
+Split *only =status/led_indicator=* (168 lines, one barrel) into its own package.
+
+Rationale: it is the smallest possible split; it directly unblocks the LED fix
+that six consumers are waiting on; and it proves the =resolution: workspace=
+mechanic against a package small enough that the outline defect cannot hide
+anything. If the workspace ergonomics are bad, we learn it for 168 lines instead
+of 25,000.
+
+** 5.3 Stage 3 — reassess, gated on two things
+
+Do not split the rest of the Dart side until BOTH:
+1. =ast__outline='s truncation and blind-spot defects are fixed, or another
+   Dart structural instrument exists. Otherwise the split is planned blind.
+2. =check.yml= exists on the kit (=17a7476c=). Splitting before gating
+   multiplies unenforced boundaries.
+
+** 5.4 What to build instead of =app_kit=, for now
+
+Nothing. The provider-tail insight is correct and should shape the *packages*,
+not become a package. Building =app_kit= as designed would promote widgets and
+leave tails unaddressed — the exact mechanism that produced =AdaptiveLayout='s
+zero adopters.
+
+* 6. Confidence, stated honestly
+
+| claim | confidence | basis |
+|-------+------------+-------|
+| version coupling is the real problem | *high* | measured; explains =62419295= |
+| cross-language contracts must co-version | *high* | 5 contracts named and method-matched |
+| =observe/= stays put | *high* | =ast__callers-of=, every constructor |
+| Go-first is the right order | *high* | Go instruments work; Dart's are defective |
+| N packages beats three tiers | *medium-high* | the arguments are strong but the cost is recurring and the workspace mechanic is unproven here |
+| ~12 packages is the right number | *low* | a sketch; the Dart half cannot be sized until the instrument is fixed |
+| the staging order | *medium* | judgement, not measurement |
+
+*The honest summary:* the case against three tiers is strong and I would not
+build them. The case for N packages is good but its execution risk sits almost
+entirely on the Dart side, where the instrument is broken. Hence: commit to the
+model, stage the execution, and let the Dart half wait for a working instrument
+rather than betting a 25,000-line split on a tool that silently drops a third of
+what it reads.
+
+* Source Verification Notes
+
+** Verified
+- Kit: one pubspec, v0.2.4, 23 barrels, 4 non-SDK deps — re-census.
+- All five Go/Dart contracts, method-matched — re-census per repo.
+- =observe/= single production consumer — =ast__callers-of= on every constructor,
+  reproduced by the orchestrator on =CostMiddleware= (15 callers, 14 tests, 1
+  production).
+- =AdaptiveLayout= 8 required params, =SpanHost= 6 — Read-verified.
+- =outline= truncation — reproduced first-hand on
+  =notekeep/settings_screen.dart= (21 classes, 2 reported).
+- mountbridge =internal/= LOC — re-census.
+- Transport corrections (prometheus 1, dbus 2, graphql 0) — go.mod + import
+  greps + =kit_surface.go:31=.
+
+** Judgement, not measurement
+- The staging order and the choice of =led_indicator= as the proof package.
+- "~12 packages" — a sketch, explicitly low-confidence.
+- That release overhead is affordable. Nobody has measured it here.
+
+** Not verified
+- That =resolution: workspace= works well in this family — zero repos use it.
+- Whether the two gomobile bridges are similar enough to share, beyond both
+  being gomobile. Not compared structurally.
+
+* Cross-References
+- Re-census: [[file:../ui/docs/census2/]]
+- Standing design under challenge: [[file:../ui/docs/framework-subsumption-design.org]] §1b, §2
+- Decision todo: =f57991e5=; CI =17a7476c=; pins =62419295=; installer consumer =2e277687=

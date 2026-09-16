@@ -1,0 +1,158 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Family icon gallery — verification</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #16202e; --muted: #5b6b7f; --line: #d7dde5;
+    --card: #ffffff; --shadow: 0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.10);
+  }
+  body.dark {
+    --bg: #0b1220; --fg: #e6edf5; --muted: #90a2b8; --line: #223049;
+    --card: #111a2b; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 32px 64px; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 0 0 20px; max-width: 74ch; }
+  .bar { display: flex; gap: 8px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
+  button {
+    font: inherit; padding: 6px 12px; border-radius: 7px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--card); color: var(--fg);
+  }
+  button[aria-pressed="true"] { background: #2563eb; border-color: #2563eb; color: #fff; }
+  .app {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px 18px 18px; margin-bottom: 18px; box-shadow: var(--shadow);
+  }
+  .app > header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .app h2 { font-size: 15px; margin: 0; }
+  .app .note { color: var(--muted); font-size: 12.5px; }
+  .row { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; }
+  figure { margin: 0; text-align: center; }
+  figure img { display: block; image-rendering: auto; }
+  /* Checkerboard proves the corner is transparent, not painted the page colour. */
+  figure .frame {
+    display: inline-flex; padding: 6px; border-radius: 8px; border: 1px solid var(--line);
+    background-image:
+      linear-gradient(45deg, rgba(128,128,128,.22) 25%, transparent 25%),
+      linear-gradient(-45deg, rgba(128,128,128,.22) 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, rgba(128,128,128,.22) 75%),
+      linear-gradient(-45deg, transparent 75%, rgba(128,128,128,.22) 75%);
+    background-size: 12px 12px;
+    background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+  }
+  figcaption { font-size: 11.5px; color: var(--muted); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  table { border-collapse: collapse; margin-top: 14px; font-size: 12.5px; width: 100%; }
+  th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .warn { color: #b45309; }
+  body.dark .warn { color: #fbbf24; }
+  .legend { color: var(--muted); font-size: 12.5px; margin-top: 10px; max-width: 88ch; }
+  .hide-actual .actual { display: none; }
+  .hide-zoom .zoom { display: none; }
+</style>
+
+<h1>Family icon gallery</h1>
+<p class="sub">
+  Every app icon rendered from its <code>gen-icon</code> spec: one SVG plus six hicolor PNG
+  sizes. Shown at <strong>actual pixel size</strong> — a contact sheet that scales everything up
+  hides exactly the failure it should catch. The checkerboard is there so a transparent tile
+  corner is visibly transparent rather than merely the page colour.
+</p>
+
+<div class="bar">
+  <button id="theme" aria-pressed="false">Dark background</button>
+  <button id="tActual" aria-pressed="true">Actual size</button>
+  <button id="tZoom" aria-pressed="true">4&times; zoom</button>
+  <span class="app note" style="margin-left:auto">
+    Generated <span id="stamp"></span> · palette <code>slate</code>
+  </span>
+</div>
+
+<div id="apps"></div>
+
+<p class="legend">
+  <strong>ink</strong> is the share of opaque pixels differing from the tile by more than 30 per
+  channel — a proxy for "the artwork actually drew". Background is the <em>modal</em> opaque
+  colour, not a sampled point: sampling top-centre inverted the reading for every icon whose
+  artwork reaches there (netroute-manager, cross-bridge, voicelab all did), reporting above 80%.
+  <strong>corner</strong> must be <code>a0</code> — fully transparent — or the rounded tile is
+  bleeding square edges.
+</p>
+
+<script>
+const SIZES = [512, 256, 128, 64, 48, 32];
+const APPS = [
+  ["ghk",          "gatehub-kit · gateway hub and spokes"],
+  ["word-bank",   "open book, 語 wordmark"],
+  ["voicelab",    "speech bubble + waves; あ over vl"],
+  ["mountbridge",     "folder + network nodes — now has an SVG"],
+  ["cross-bridge", "display + network + penguin + apple, Ξ wordmark"],
+  ["netroute-manager",   "one ingress, three backends"],
+];
+
+fetch("sample.json").then(r => r.json()).then(data => {
+  const root = document.getElementById("apps");
+  document.getElementById("stamp").textContent = new Date().toISOString().slice(0, 10);
+
+  for (const [app, note] of APPS) {
+    const el = document.createElement("section");
+    el.className = "app";
+    const m = data[app] || {};
+
+    const shots = SIZES.map(s => `
+      <figure class="actual">
+        <span class="frame"><img src="out/${app}/${app}-${s}.png" width="${s}" height="${s}" alt="${app} ${s}px"></span>
+        <figcaption>${s}px</figcaption>
+      </figure>`).join("");
+
+    // Small sizes magnified with nearest-neighbour: this is where a glyph turns
+    // to mush, and smooth upscaling would politely hide it.
+    const zooms = [32, 48, 64].map(s => `
+      <figure class="zoom">
+        <span class="frame"><img src="out/${app}/${app}-${s}.png" width="${s * 4}" height="${s * 4}"
+              style="image-rendering: pixelated" alt="${app} ${s}px magnified"></span>
+        <figcaption>${s}px &times;4</figcaption>
+      </figure>`).join("");
+
+    const rows = SIZES.map(s => {
+      const d = m[s]; if (!d) return "";
+      const bad = d.corner.split("/a")[1] !== "0";
+      return `<tr>
+        <td>${s}px</td><td><code>${d.centre}</code></td>
+        <td class="${bad ? "warn" : ""}"><code>${d.corner}</code></td>
+        <td>${d.colors}</td><td>${d.ink.toFixed(1)}%</td></tr>`;
+    }).join("");
+
+    el.innerHTML = `
+      <header><h2>${app}</h2><span class="note">${note}</span></header>
+      <div class="row">
+        <figure class="actual">
+          <span class="frame"><img src="out/${app}/${app}.svg" width="256" height="256" alt="${app} SVG"></span>
+          <figcaption>SVG @256</figcaption>
+        </figure>
+        ${shots}
+      </div>
+      <div class="row" style="margin-top:18px">${zooms}</div>
+      <table>
+        <tr><th>size</th><th>centre</th><th>corner</th><th>colors</th><th>ink</th></tr>
+        ${rows}
+      </table>`;
+    root.appendChild(el);
+  }
+});
+
+const toggle = (btn, fn) => btn.addEventListener("click", () => {
+  const on = btn.getAttribute("aria-pressed") === "true";
+  btn.setAttribute("aria-pressed", String(!on));
+  fn(!on);
+});
+toggle(document.getElementById("theme"), on => document.body.classList.toggle("dark", on));
+toggle(document.getElementById("tActual"), on => document.body.classList.toggle("hide-actual", !on));
+toggle(document.getElementById("tZoom"), on => document.body.classList.toggle("hide-zoom", !on));
+</script>

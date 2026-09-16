@@ -1,0 +1,52 @@
+# Sibling worktrees (see the global Worktree Convention) — never part of the
+# primary checkout's status.
+.worktree/
+
+# Go build output. Binaries go to bin/, never the repo root.
+bin/
+coverage.out
+
+# Self-extractor payloads. A consuming repo's packaging script stages its
+# release tree as payload.tar.gz, copies it NEXT TO the installer's main() here,
+# and builds with `-tags withpayload` (see go/cmd/*/payload_with.go). The
+# artifact is therefore written INTO this checkout by another repo's build, and
+# it is tens to hundreds of MB.
+#
+# voicelab already ignores its own cmd/installer/payload.tar.gz; that line did
+# not have an equivalent here, so the first real cutover would leave a large
+# untracked binary in this tree, one `git add -A` from being committed.
+go/cmd/*/payload.tar.gz
+
+# Dart / Flutter
+.dart_tool/
+build/
+.flutter-plugins-dependencies
+# `flutter test --coverage` (make cov) writes here, per package. The kit's own
+# .gitignore carries this line and it did not come across with the tranche-0
+# copy, so running the gate left an untracked coverage/ tree in the primary
+# checkout — which the worktree convention requires to stay pristine.
+coverage/
+# Local kit/package redirects used while iterating against a worktree; the
+# committed pubspec pin is the truth.
+pubspec_overrides.yaml
+
+# `go build ./cmd/<name>` writes the binary into the CURRENT directory, not
+# into bin/ — so a casual build run from go/ leaves an executable at
+# go/<name>, which the bin/ rule above does not cover. Caught exactly that
+# way: `go build ./cmd/pin-monitor` during the tools port left go/pin-monitor
+# staged by `git add -A`. Ignore the commands by name.
+/go/gen-icon
+/go/pin-monitor
+/go/example-installer
+
+# pin-monitor's config names sibling checkouts on THIS machine by absolute
+# path — host-specific by construction, never committed. Copy
+# consumers.yaml.example to consumers.yaml and fill in your own paths.
+go/cmd/pin-monitor/consumers.yaml
+
+# go.work and go.work.sum are PER-CHECKOUT local state -- one per worktree,
+# never committed. go resolves the NEAREST go.work walking upward, so a file at
+# the repo root is found from inside every worktree beneath it, where its `use`
+# set names the PRIMARY checkout rather than the worktree in hand.
+go.work
+go.work.sum

@@ -1,0 +1,1199 @@
+:PROPERTIES:
+:ID:       frameworks-shared-buffer-information-evaluation
+:END:
+#+title: Evaluation — =shared-buffer-information/= (Go ↔ Flutter shared memory)
+#+date: 2026-09-04
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-09-04
+:END:
+
+** Status
+Evaluation complete, *claims re-verified in a second round* (2026-09-04), and a
+design disposition defined (§6). Verdict: *reject the artifacts as an
+implementation plan; adopt no code; pursue the format win, not the transport
+change.* Awaiting approval on file disposition (§8).
+
+** Completed
+- [X] Inventoried all 9 files; established that the three documents are
+  *independent drafts, not versions of one file*
+- [X] Compiled the Go — it *does not compile* (§4, F1)
+- [X] Verified against the installed Dart SDK that the design's central
+  synchronisation claim is *false* (§4, F2)
+- [X] *Round two:* built an end-to-end Go =c-shared= + real Dart FFI harness and
+  reproduced F3 and F4 against the verbatim Dart consumer — F4 killed the Dart
+  VM with SIGABRT, uncatchable
+- [X] *Round two:* upgraded F6 (benchmarked, 15–20x), F7 (verified against
+  Flutter's own template), F8 (both failure modes measured) from inspection to
+  measurement
+- [X] *Round two:* **withdrew** F9's ABI-corruption claim — measurement did not
+  support it; replaced with the stronger finding that the mismatch is
+  undetectable
+- [X] Checked the premise against this repo's own measured position (§5)
+- [X] Defined the design disposition, including entry conditions and the
+  constraints that bind if they are ever met (§6.3, §6.4)
+- [X] *Round three:* tested =recover()=, the process model and signal
+  disposition. =recover()= *does* raise errors politely for the panic class
+  (F4); a caller-induced bad address is *not* recoverable even so; the =.so=
+  runs *in the Dart VM's own process* (same PID); signal disposition is
+  per-process and Go *chains* rather than clobbers (F4b). *Corrected F4 and
+  F12*; rewrote C4 and added C7 — fault isolation needs a process boundary,
+  which is a real point in favour of the architecture the material dismissed.
+
+- [X] *Round four:* built the "give Dart atomics" rescue and measured it (§6.5).
+  It *works* — a C11 shim gives Dart real acquire/release at 7.38 ns per leaf
+  load — but batching the whole protocol into native is ~600x cheaper per byte,
+  the shim must be C (16 KB, no signal handlers) rather than Go (2.4 MB, three),
+  atomics fix the memory model but *not* F3's logic defect (C6 does, verified),
+  and adding shm delivers C7: *demonstrated a producer crashing with SIGSEGV
+  while the Dart consumer read on*. Net effect: the separate-process
+  architecture the material dismissed is the recommended shape.
+
+** Next Steps
+- [ ] User decision on §8 disposition (A / B / C)
+- [ ] If B or C: move or delete =shared-buffer-information/= accordingly
+- [ ] Consider whether §6 should be lifted into =open-decisions-brief.org= as a
+  fifth decision, since it has the same shape as D1–D4
+
+** Open Questions
+- Whether any consumer in this family actually wants in-process Go parsing.
+  Per =flutter-concurrency-and-paging.org= §4b.4 the only candidate named is the
+  lisp runtime, and it does not exist yet.
+
+* 1. What was evaluated
+
+Nine untracked files dropped into =shared-buffer-information/= (120 KB), all
+concerning zero-copy shared memory between a Go runtime and a Flutter/Dart
+application.
+
+| file | kind | lines / pages |
+|------+------+---------------|
+| =shared_memory_guide.org= | beamer deck source | 100 |
+| =shared_memory_guide.pdf= | render of the above | 8 pp |
+| =shared_memory_guide-v2.org= | beamer deck source, *different content* | 53 |
+| =shared_memory_guide-v2.pdf= | *not* a render of the above | 2 pp |
+| =shared_memory_guide-original.pdf= | *third* document | 2 pp |
+| =shared_memory_comprehensive_blueprint.md= | the substantive proposal | 220 |
+| =shared_memory_comprehensive_blueprint.org= | pandoc conversion of the =.md= | 270 |
+| =ring_buffer.go= | extracted Go producer | 68 |
+| =ring_buffer.dart= | extracted Dart consumer | 61 |
+
+* 2. Comparison — the naming implies a lineage that does not exist
+
+The =-original= / (unsuffixed) / =-v2= suffixes read as three revisions of one
+guide. They are not. Text extraction shows *three distinct documents with
+different titles, different section structures, and different claims*:
+
+| document | title | scope |
+|----------+-------+-------|
+| =-original.pdf= | "Go & Flutter Cross-Runtime Shared Memory Guide" | 2 architectures (FFI, IPC) |
+| =guide.org/.pdf= | "Cross-Runtime Shared Memory" | same 2, expanded to a deck |
+| =-v2.org/.pdf= | "Advanced Go & Flutter Architectures" | *3* solutions (adds gomobile) + ring buffer |
+
+The =-v2.pdf= is *not* a render of =-v2.org= — the PDF carries a Q&A framing
+("Can a Go ring buffer … utilize standard mutexes and atomics across the
+boundary?") that the org file does not, and the org file carries a =libpoppler=
+sentence the PDF does not.
+
+*Consequence for the archive:* there is no "latest version" to keep. Any
+retention decision has to name files individually.
+
+The two code files are the blueprint's embedded listings, extracted verbatim
+except that the =.org= conversion *dropped three comments* present in
+=ring_buffer.go= (verified by diff). The =.md= and =.org= blueprints are
+otherwise the same document.
+
+* 3. What the material proposes
+
+A 32-byte header (=Capacity=, =Head=, =Tail=, =IsFull=, padding) followed by a
+data region, mapped into one allocation; Go compiled =-buildmode=c-shared=
+(desktop/Android) or =-buildmode=c-archive= (iOS); Dart holding the allocation
+and viewing it through =Pointer.asTypedList=; Go owning =Head=, Dart owning
+=Tail=, both writing =IsFull=.
+
+The single-page framing is sound and is *not* what this evaluation rejects. The
+deployment matrix (§2 of the blueprint) is broadly correct, and the mobile
+observation — that =gomobile bind= deep-copies across the JNI/Obj-C wrapper and
+therefore cannot carry a raw pointer — is *true and is the most useful sentence
+in the whole set*. It agrees with what this repo already recorded independently
+at =flutter-concurrency-and-paging.org= §4b.4(c).
+
+Everything below concerns the *execution*.
+
+* 4. Analysis — findings, severity-ranked
+
+Findings marked *[MEASURED]* were reproduced on this host on 2026-09-04;
+commands are in §9. *[VERIFIED]* means checked against an installed artifact.
+*[JUDGEMENT]* means reasoned from architecture, not measured here.
+
+** F1 — BLOCKER: the Go does not compile *[MEASURED]*
+
+=ring_buffer.go:34= declares =tail= and never uses it. That is a hard compile
+error in every Go version.
+
+: $ CGO_ENABLED=1 go build -buildmode=c-shared -o libgo.so ./ring_buffer.go
+: ./ring_buffer.go:34:2: declared and not used: tail
+: TRUE EXIT CODE: 1        # no libgo.so produced
+
+A document that calls itself "the definitive implementation plan" and a
+"Complete … Code Manifest" contains a producer that *has never been compiled
+once*. This finding is not merely a typo to patch — it is the strongest
+available evidence about how much verification stands behind the rest, and it
+should be weighted that way.
+
+(Recorded because it is a recurring trap: a reported exit status describes the
+last thing that ran, not the thing you care about. My first run of this build
+was piped into =head=, which reported =rc=0= — the pipeline's exit status, not
+the compiler's. The failure was only visible after re-running and reading =$?=
+on the command itself.)
+
+The Dart file, by contrast, *analyzes clean* (=dart analyze=, exit 0, Dart
+3.12.2). Its defects are semantic, and no analyzer can see them.
+
+** F2 — BLOCKER: the synchronisation model cannot be implemented in Dart *[VERIFIED]*
+
+This is the load-bearing finding. The material's central technical claim, from
+=shared_memory_guide-v2.pdf=:
+
+#+begin_quote
+"The FFI / IPC Vector: Works flawlessly. Because raw memory pointers are directly
+shared between Go threads and Dart, standard memory barriers, atomics, and locks
+maintain coherence across boundaries."
+#+end_quote
+
+*Dart has no atomics and no memory barriers.* Checked against the Dart SDK
+installed on this host (3.12.2, =flutter/bin/cache/dart-sdk=): the entire
+=dart:ffi= library — all 11 files — contains *zero* occurrences of "atomic",
+"fence" or "barrier". A grep for "atomic" across every public SDK library
+returns five files, all unrelated (regexp atomic groups, =web_sql=,
+=Link= "atomically", =developer/extension=). There is no atomic load, no atomic
+store, no compare-and-swap, and no fence primitive available to Dart code.
+
+So the blueprint's own comments are false where they are load-bearing:
+
+- =ring_buffer.dart:23= — "Atomic Getters via ByteData Endian abstractions".
+  =ByteData.getUint64= is a plain read with no ordering guarantee whatsoever.
+- =ring_buffer.dart:53= — "Persist tail updates back across the memory fence".
+  =setUint64= issues no fence.
+
+The protocol is therefore a data race *by construction*, not by oversight. Go's
+side uses sequentially-consistent =sync/atomic=; Dart's side has no way to
+participate. The two halves cannot agree because one half has no vocabulary for
+agreement.
+
+*This is not fixable by editing the Dart file.* It is a property of the platform
+and it invalidates the design as specified.
+
+** F3 — HIGH: the reader silently destroys unread data *[MEASURED — end to end]*
+
+=IsFull= is a flag written by *both* runtimes — Go sets it to 1, Dart sets it to
+0 — which is a shared read-modify-write with atomicity on only one side (F2).
+Beyond the race, the Dart reader clears it *unconditionally* (=ring_buffer.dart:57=),
+including on paths where it read nothing.
+
+*Re-verified 2026-09-04 in real Dart against real Go over real FFI* — the
+verbatim =RingBufferController= from =ring_buffer.dart=, calling a =libgo.so=
+built from =ring_buffer.go= with only the F1 compile error fixed. (The first
+pass used a Go port of the reader as a model; the end-to-end run supersedes it
+and agrees with it exactly.)
+
+: T3 wrote 8 bytes -> head=0 tail=0 isFull=true  data="ABCDEFGH"
+: T3 readPayload(Uint8List(0)) -> 0 bytes; isFull now false
+: T3 writer accepted 8 more bytes into the full buffer; data="XXXXXXXX"
+: T3 -> 8 unread bytes destroyed. Expected: writer returns -1.
+
+Note this reproduces *on x86-64*, which has the strongest memory ordering of any
+target platform. It is a logic defect, not an ordering defect — F5 is additive
+to it, not the cause of it.
+
+A consumer that calls =readPayload= with a zero-length buffer — a plausible
+"drain what's available" idiom — unlocks the writer over unread data. There is
+no error, no return signal, and no way for either side to detect it afterwards.
+
+*The correct shape is well known and simpler than what is written*: monotonically
+increasing 64-bit sequence counters that never wrap, masked only on access.
+=head == tail= then means empty and =head - tail == capacity= means full, with
+*no shared flag at all* — which removes both this defect and the cross-runtime
+RMW. That the blueprint reaches for an =IsFull= flag instead is a design-level
+error, not a coding slip.
+
+** F4 — HIGH: any bad input from Dart aborts the host process *[MEASURED — end to end]*
+
+None of the exported functions validates its arguments or installs a =recover()=.
+Calling =GoWritePayload= on a header that was never initialised (=Capacity= 0),
+*from real Dart, through real FFI, with the call wrapped in a Dart =try/catch=*:
+
+: T4 calling GoWritePayload on an uninitialised header...
+: panic: runtime error: index out of range [0] with length 0
+: goroutine 17 [running, locked to thread]:
+: main.GoWritePayload(...) ring_buffer.go:54
+: /bin/bash: 1112927 Aborted (core dumped)
+: DART PROCESS EXIT: 134
+
+*The =catch= block never ran and the line after it never printed.* The Go panic
+took the whole Dart VM down with SIGABRT.
+
+*CORRECTION — the first draft of this finding overstated its scope.* It said
+"there is no defensive measure available on the Dart side", which is true, and
+then read as though nothing could be done. *The defence exists; it is just on the
+Go side, and the supplied code omits it.* Measured 2026-09-04 (§9):
+
+| entry point | fault | result |
+|-------------+-------+--------|
+| unguarded (the blueprint's shape) | index out of range | *SIGABRT, exit 134* |
+| =defer recover()= at the =//export= | index out of range | *returns -2; Dart survives* |
+| =defer recover()= at the =//export= | nil pointer dereference | *returns -2; Dart survives* |
+| =defer recover()= at the =//export= | *bad address =0xdeadbeef=* | *SIGABRT, exit 134 — recover did NOT catch it* |
+
+Three consequences, and the third is the one that matters:
+
+1. *A polite error IS achievable for the panic class.* The guarded call returned
+   =-2=, and three further calls afterwards also returned =-2= — the VM was
+   healthy, not limping. So F4 as the blueprint leaves it is a *defect of the
+   code*, not a property of the FFI boundary.
+2. *Go runtime errors are panics and are recoverable* — nil dereference included.
+3. *A genuine bad address is NOT recoverable, with =recover()= in place.* Go
+   distinguishes panics from *fatal errors* (=runtime.throw=): the wild
+   dereference produced
+   : unexpected fault address 0xdeadbeef
+   : fatal error: fault
+   : [signal SIGSEGV: segmentation violation code=0x1 addr=0xdeadbeef]
+   and exited 134 anyway. Out-of-memory and stack exhaustion are in the same
+   unrecoverable class.
+
+*And (3) is exactly the failure mode this architecture creates.* =recover()=
+protects against Go's own logic bugs. It does not protect against *Dart handing
+Go a bad pointer* — and a hand-managed =Pointer<Uint8>= arena is precisely a
+machine for producing bad pointers. So the residual hazard is real, but it is
+narrower and better-characterised than the first draft implied: *validate
+arguments before they can fault, because you cannot recover from the fault.*
+
+** F4b — the execution model: one process, one signal table *[MEASURED]*
+
+Worth stating explicitly, because every fault question above depends on it and
+the material never says it.
+
+*The =.so= is not a subprocess. It is loaded into the Dart VM's own address space
+and runs as the same process.* Measured by having Go report its own PID:
+
+: Dart pid=1790143   Go os.Getpid()=1790143   SAME PROCESS
+
+That is the whole point of Architecture 1 — and it is *why* a Go fatal error ends
+Dart. One process means one address space, one signal disposition, and one exit
+status. (Architecture 2, the POSIX-shm one the material discourages, is the
+variant with a process boundary.)
+
+*Can the Go library have its own signal or panic handling?* Panic handling, yes —
+per entry point, via =recover()= (F4). *Signal handling, no: signal disposition is
+per-process, not per-library.* There is one handler table, and loading the Go
+runtime mutates it. Measured by reading =/proc/self/status= =SigCgt= immediately
+before and after =DynamicLibrary.open=:
+
+| | caught signals |
+|-+----------------|
+| Dart alone | SIGQUIT SIGILL SIGTRAP SIGBUS SIGSEGV (+sig33) |
+| after loading the Go =.so= | the same, *plus SIGFPE, SIGPIPE, SIGURG* |
+| removed | *none* |
+
+Two readings, and the reassuring one is real:
+
+- *Go chains rather than clobbers.* Nothing Dart caught was taken away. For the
+  signals both runtimes want (SIGSEGV, SIGBUS, SIGILL, SIGTRAP) Go's
+  =c-shared= runtime saves the pre-existing handler and forwards signals it
+  decides are not its own. The two runtimes coexist. This is *better* than the
+  first draft of F12 implied, and that bullet is corrected accordingly.
+- *But the process's signal regime is now the union of two runtimes' needs.* Go
+  added three handlers to a process that previously had no opinion about them —
+  SIGURG especially, which Go uses for asynchronous preemption, so it now arrives
+  routinely in a process that never saw it before. You cannot scope that to the
+  library.
+
+*Therefore: panic isolation is achievable, fault isolation is not.* If the
+requirement is "a bug in the Go code must not take down the user's UI", no
+amount of =recover()= delivers it — only a process boundary does. That is a real
+advantage of the separate-process architecture, and it is one the material never
+credits: its comparison table scores IPC as "High complexity / Requires OS IPC
+Privs" (the latter false, F11) and never mentions fault containment at all. See
+§6.4 C4 and C7.
+
+** F5 — HIGH: weak memory ordering on ARM *[JUDGEMENT]*
+
+Every mobile target and every Apple Silicon desktop is ARM, which has a weakly
+ordered memory model. Go's =atomic.StoreUint64(&rb.Head, …)= gives the writer
+release semantics, but the reader needs a matching *acquire* to be guaranteed the
+data bytes written before the head update are visible. Dart cannot issue one
+(F2). The reader may therefore observe an advanced =Head= alongside *stale data
+bytes*.
+
+This is the failure mode that does not appear on x86 desktop testing and does
+appear in the field on phones. It is worth naming separately from F2 because it
+is how F2 actually presents.
+
+*Scope of this finding, stated precisely.* It was *not* reproduced — no ARM
+hardware or emulator was used in this session, and I am not presenting it as an
+observation. What *is* verified is its premise: Dart has no acquire primitive
+(F2). The consequence is the textbook one for a release store without a paired
+acquire load.
+
+It is also *not load-bearing for the verdict*, and that is worth saying so the
+recommendation does not appear to rest on an unreproduced claim: F3 destroys data
+on *x86-64*, the strongest-ordered target there is. F5 says the design is
+additionally wrong on every ARM device; the design is already wrong without it.
+
+** F6 — MEDIUM: the implementation contradicts the document's headline claim *[MEASURED]*
+
+The material is titled around "zero-copy". The code performs *two* copies:
+
+- Go: =dstSlice[head] = srcSlice[i]= — copies the payload into the ring, one
+  byte at a time, with a =% capacity= *integer division per byte*.
+- Dart: =outBuffer[bytesRead] = dataView[currentTail]= — copies out of the ring
+  into a caller buffer, again one byte at a time, again with a modulo per byte.
+
+Only the *mapping* is zero-copy; the data path is not.
+
+*The cost was measured rather than asserted.* Go benchmark, the blueprint's inner
+loop against the standard formulation (two =copy()= calls over the two contiguous
+spans, power-of-two capacity, mask instead of modulo), 4 KB payload into a 64 KB
+ring, =-benchtime 2s -count 3=:
+
+| formulation | ns/op (3 runs) | throughput |
+|-------------+----------------+------------|
+| blueprint — byte loop + =%= per byte | 10060 / 6948 / 5243 | 407 – 781 MB/s |
+| two =copy()= + mask | 277.5 / 324.8 / 710.6 | 5.7 – 14.8 GB/s |
+
+*Roughly 15–20x slower* (best-run against best-run: 5243 / 277.5 = 18.9x). The
+spread is wide because this host was loaded — see §9 for conditions — so treat
+the *ratio* as the finding and the absolute numbers as indicative.
+
+A document arguing for this mechanism *on performance grounds* ships a write path
+an order of magnitude slower than the ordinary one, inside a design whose entire
+justification is speed.
+
+The genuinely zero-copy read — the reader parsing in place out of =dataView=
+without copying to =outBuffer= — is the thing that would justify the whole
+design, and it is exactly what the API does not offer.
+
+** F7 — MEDIUM: the CMake fragment will not work as described *[VERIFIED against the SDK template]*
+
+=CMakeLists.txt= (blueprint §5) is introduced as a block to "append … directly to
+your target native workspace configuration engine". Two problems:
+
+1. It opens with =cmake_minimum_required()= and =project()=. Appending a second
+   =project()= call into Flutter's generated runner =CMakeLists.txt= is not a
+   no-op; it re-scopes the build.
+2. It builds into =CMAKE_CURRENT_BINARY_DIR= and then stops. There is no
+   =install(FILES … DESTINATION "${INSTALL_BUNDLE_LIB_DIR}")=, so the library is
+   never placed in the bundle. The claim that "Flutter will trigger the embedded
+   build target automatically … placing the compiled library directly alongside
+   your engine's runtime environment" is false — bundling is the step that is
+   missing.
+
+Confirmed against Flutter's *own* Linux app template rather than from memory —
+=flutter_tools/templates/app/linux.tmpl/CMakeLists.txt.tmpl= defines
+=INSTALL_BUNDLE_LIB_DIR= at line 96 and issues an explicit
+=install(FILES … DESTINATION "${INSTALL_BUNDLE_LIB_DIR}")= for the engine
+library, the plugin libraries and the AOT library (lines 104, 109, 116, 130);
+the Windows template does the same. A native library reaches the bundle only via
+such a rule, and the blueprint has none.
+
+A corollary showed up while building the end-to-end harness: the blueprint's Dart
+side calls =DynamicLibrary.open('libgo.so')= with a bare filename. That resolves
+through the dynamic loader's search path, *not* the process's working directory,
+so it fails even with the library sitting next to the executable — measured:
+=Failed to load dynamic library 'libgo.so': cannot open shared object file=. The
+harness only worked once given an absolute path. Getting the library built is
+less than half the packaging problem.
+
+** F8 — MEDIUM: the cross-compile commands cannot succeed as written *[MEASURED]*
+
+Both =c-shared= and =c-archive= require cgo, and cgo cross-compiling requires
+=CGO_ENABLED=1= plus a target =CC= — an NDK clang wrapper for Android, a clang
+with =-isysroot= / =-miphoneos-version-min= for iOS. Neither is mentioned.
+
+Run verbatim, both fail, and *the failure is worse than a missing-toolchain
+message*. Cross-compiling defaults cgo OFF (measured on this host: =CGO_ENABLED=
+is =1= for the host target, =0= for both =GOOS=android= and =GOOS=ios=), which
+excludes the =import "C"= file from the build entirely — so the whole package
+becomes empty:
+
+: $ GOOS=android GOARCH=arm64 go build -buildmode=c-shared -o libgo.so ./ring_buffer.go
+: go: no Go source files                                          # EXIT 1
+: $ GOOS=ios GOARCH=arm64 go build -buildmode=c-archive -o libgo.a ./ring_buffer.go
+: go: no Go source files                                          # EXIT 1
+
+"no Go source files", pointing at a directory that plainly contains one, names
+neither cgo nor the toolchain. Setting =CGO_ENABLED=1= without a target =CC= then
+falls through to the *host* compiler assembling ARM64 sources:
+
+: # runtime/cgo
+: gcc_arm64.S:30: Error: no such instruction: `stp x29,x30,[sp,'   ...  # EXIT 1
+
+Two failures deep before anything mentions what is actually missing.
+
+** F9 — MEDIUM: the "complete code manifest" has no binding layer *[VERIFIED]*
+
+=ring_buffer.dart= reads and writes the header, but *nothing in the material ever
+calls =InitRingBuffer= or =GoWritePayload=*. There is no =DynamicLibrary.open=,
+no =lookupFunction= typedef pair for either export, and no allocation of the
+=32 + capacity= arena. The Dart class receives a =basePointer= that no supplied
+code produces. Writing that layer was the first step in building the end-to-end
+harness, and it is the single largest omission in a document titled "Complete …
+Code Manifest".
+
+The ABI the binding must match, read off the header cgo actually generates:
+
+: typedef long long GoInt64;   typedef GoInt64 GoInt;
+: extern void  InitRingBuffer(void* ptr, GoUint64 capacity);
+: extern GoInt GoWritePayload(void* ptr, void* dataPtr, GoInt dataLen);
+
+So =dataLen= and the return are *64-bit*, while the sibling document in this same
+set uses =C.int= / =ffi.Int32= for its size parameter.
+
+*CORRECTION — this is weaker than I first stated.* The first pass of this
+evaluation claimed a mismatched =ffi.Int32= typedef "would silently corrupt the
+argument". *I tested it and it does not*, at least not on this platform. Binding
+the same symbol with =Int32= and with =Int64= typedefs and calling both with a
+fresh buffer each time:
+
+| dataLen | =Int64= typedef | =Int32= typedef | |
+|---------+-----------------+-----------------+-|
+| 4 | 4 | 4 | same |
+| 8 | 8 | 8 | same |
+| 4294967300 | 64 | 64 | same |
+
+Identical in every case, including one that overflows 32 bits — on x86-64 both
+forms pass the full 64-bit register. *The claim of corruption is withdrawn.*
+
+What survives is the finding that matters more, and it is the one I did not
+originally make: *Dart FFI accepted both typedefs on the same symbol with no
+error at lookup time and no error at call time.* Nothing validates a binding
+against the native signature. So an ABI mismatch here is not loud-and-wrong, it
+is *undetectable* — benign on this ABI, unguaranteed on others, and silent
+either way. A hand-written binding layer is exactly the wrong place to put an
+unchecked contract, which is the argument for generating it (§6).
+
+** F10 — MEDIUM: the introductory example is a use-after-free, presented as a feature
+
+Both =guide.org= and =-original.pdf= open with =ProcessSharedBuffer=, which
+launches a goroutine that mutates the caller's buffer and *returns immediately*.
+The Dart caller has no completion signal and no way to know when the goroutine is
+done. The narration — "Go mutates concurrently!" — presents an unsynchronised
+data race as the demonstration. The =calloc= is never freed, and if it ever were,
+the surviving goroutine would be writing into freed memory.
+
+As the first thing a reader sees, it teaches the wrong model.
+
+** F11 — LOW, but diagnostic: provenance signals
+
+Two statements indicate the material was generated without review:
+
+- =shared_memory_guide-v2.org:53= prescribes "*Direct FFI with libpoppler or
+  custom CGo headers*" for zero-copy ring sharing. =libpoppler= is a PDF
+  rendering library and has no relationship to anything in the document.
+- =guide.org:95= — the comparison table lists POSIX shared memory as requiring
+  "OS IPC Privs". =shm_open= requires no special privilege; it is ordinary
+  filesystem permissions under =/dev/shm=. The claim is used to justify the
+  recommendation, so it is not cosmetic.
+
+These do not make the rest wrong, but they set the prior for how much of it
+should be trusted unverified — and F1 confirms that prior.
+
+** F12 — unaddressed hazards, listed for completeness *[JUDGEMENT]*
+
+Not defects in what is written, but load-bearing omissions for anyone who tried
+to build this:
+
+- *Signal handlers* — *superseded by F4b, which measured this.* The first draft
+  called two runtimes in one process "a known source of hard-to-diagnose
+  crashes". That was too dark: measurement shows Go *chains* to Dart's existing
+  handlers and removes none of them. What is true is narrower — the process
+  signal regime becomes the union of both runtimes' needs (Go adds SIGFPE,
+  SIGPIPE, SIGURG), and it cannot be scoped to the library. The material still
+  does not acknowledge any of it.
+- *Flutter hot restart.* Re-runs Dart =main()= while the loaded =.so= keeps
+  running with its old goroutines and its old pointers. Every FFI integration
+  needs an answer here; there is none.
+- *Isolate boundaries.* =Pointer.asTypedList= views cannot be sent between
+  isolates — only the integer address can. Since the stated motivation is to keep
+  work off the UI isolate, this is precisely the case that matters, and it is not
+  covered.
+- *Memory ownership.* Who allocates, who frees, what happens on either side's
+  shutdown — unspecified throughout.
+
+* 5. The premise — does this repo want the mechanism at all?
+
+Separate from whether the artifacts are correct: *is the problem they solve a
+problem here?* This repo has already answered, twice, on record.
+
+*=flutter-concurrency-and-paging.org= §4b.4 evaluated this exact option and
+ranked it second.* It names three ways to exploit Go's parsing strength:
+
+- *(a) Go pre-digests* — the daemon already exists in every pair; have it emit a
+  display-shaped buffer. "No new dependency on either side and … where the
+  biggest win is, because it removes parsing from Dart rather than relocating
+  it."
+- *(b) =dart:ffi= + =-buildmode=c-shared=* — "Useful when the parse must happen
+  *in* the app rather than in a daemon". Costs named: FFI marshalling, a
+  per-platform build matrix, manual memory ownership.
+- *(c) gomobile* — mobile only.
+
+Its recommendation: *"(a) by default; (b) only when the parse must be
+in-process."* The one candidate it names for (b) is a lisp runtime that does not
+exist yet.
+
+*The material under evaluation is an elaborate (b), argued without reference to
+(a).* It never considers having the Go side simply emit a better-shaped buffer
+over the transport that already exists.
+
+*§4b.3 also already picked the format*: for a large scrolled collection, a
+zero-copy random-access layout — flatbuffers or a packed columnar buffer — read
+per visible row. Flatbuffers is *already a dependency of =flowq=* in this family.
+That gets most of the decode win *without an FFI boundary, without a
+per-platform build matrix, and without a hand-written concurrency protocol*.
+
+*And nothing here has measured that IPC is the bottleneck.*
+=docs/performance-baseline.org= is thorough — 669 lines, with explicit negative
+results — and every measurement in it is *build and test cost*, not runtime data
+transfer. =flutter-concurrency-and-paging.org= §6 says so directly: the isolate
+exposure figure "is *exposure*, not an observed defect, and nothing in this
+family has measured frame time."
+
+So the mechanism is being proposed against an unmeasured bottleneck, and the
+repo's own cheaper answer to the same problem has not been tried.
+
+*Finally, the repo's own tie-breaker applies.* =docs/open-decisions-brief.org=
+closes with it, after finding the same shape in three of four open decisions:
+
+#+begin_quote
+"for each of these, name the first real consumer and build against it alone
+before generalising."
+#+end_quote
+
+D4 declines to build a transport codegen tier for exactly this reason —
+=pkg/transport= has zero consumers — and the fleet has a measured verdict on
+designing ahead of consumers (=AdaptiveLayout=: eight required arguments, zero
+adopters). A cross-runtime shared-memory ring with no named consumer is the same
+pattern with a much higher floor.
+
+* 6. Design disposition
+
+** 6.0 On the artifacts themselves
+
+1. *Rejected as an implementation plan.* F1 and F2 are each independently
+   disqualifying: the producer has never compiled, and the synchronisation model
+   cannot be expressed in the consumer's language.
+2. *No code adopted, adapted, or used as a starting point* — not
+   =ring_buffer.go=, not =ring_buffer.dart=, not the CMake fragment. The defects
+   are in the design (F2, F3, F6), so patching the listings would yield something
+   that *looks* reviewed and is not.
+3. *Two claims are true and worth keeping*, both already held independently here:
+   =gomobile bind= deep-copies across the JNI/Obj-C wrapper and cannot carry a raw
+   pointer (agrees with §4b.4(c)); and the artifact matrix is broadly right as a
+   *reference*, given F8's correction.
+
+The rest of this section is the positive position, which is the part that
+outlives these files.
+
+** 6.1 The conflation to undo
+
+The material argues one thing where there are *three separable decisions*. Almost
+all of the confusion comes from treating them as one:
+
+| # | question | this family's answer | status |
+|---+----------+----------------------+--------|
+| 1 | *Where does CPU-bound work happen?* | Go, in the daemon that already exists | settled, §4b.4(a) |
+| 2 | *What crosses the boundary, in what shape?* | a display-shaped buffer read without materialising it | settled in principle, §4b.3; *unadopted* |
+| 3 | *What carries it?* | the transport that already exists | settled by default; revisit only on evidence |
+
+*The blueprint proposes a change to (3) in order to obtain a benefit that belongs
+to (2).* That is the central error, and it is an expensive one: the decode win —
+not building =Map<String, dynamic>= for every row — is available today over a
+plain socket, with no FFI boundary, no five-platform build matrix, no
+cross-runtime concurrency protocol, and no uncatchable process aborts.
+
+*Disposition: pursue (2). Do not touch (3).*
+
+** 6.2 The standing default, restated so it is actionable
+
+- *Go pre-digests.* The daemon parses the awkward format and emits something
+  display-shaped. This removes parsing from Dart rather than relocating it.
+- *Pick the payload shape by what the UI does with it* (§4b.3): opaque bytes stay
+  opaque and ride =TransferableTypedData=; a large scrolled collection gets a
+  zero-copy random-access layout decoded per visible row; small control payloads
+  stay JSON and stop being optimised.
+- *Do not compress on a local pipe or socket* (§4b.3) — CPU spent to save
+  transfer time that is already ~zero.
+- *Flatbuffers is the incumbent* for the zero-copy layout: already a dependency
+  of =flowq= in this family, so adopting it is a second consumer of a proven choice,
+  not a new bet.
+
+None of this requires anything in =shared-buffer-information/=.
+
+** 6.3 Entry conditions for ever revisiting FFI or shared memory
+
+Written as a falsifiable gate, so this does not have to be re-argued from
+first principles next time the idea arrives:
+
+1. *A named first consumer* — per the brief's own tie-breaker, and D4's standing
+   refusal to build a tier above an interface with zero consumers. Today the only
+   candidate §4b.4 names for in-process parsing is a lisp runtime that does not
+   exist.
+2. *A measurement showing transfer or copying is the bottleneck* — not parsing,
+   and not assumed. Nothing in this family has measured frame time
+   (=flutter-concurrency-and-paging.org= §6), and =performance-baseline.org=
+   measures build and test cost only. A proposal to optimise an unmeasured
+   bottleneck is unreviewable.
+3. *Evidence that 6.2 alone did not close the gap.* Do the cheap thing, re-measure,
+   and only then consider the expensive one. If Go pre-digesting plus a zero-copy
+   layout gets the frame budget, the rest of this question never needs answering.
+
+Until all three hold, the answer is no, and it is a *cheap* no — see the
+reversibility note in §7.
+
+** 6.4 If the gate is ever passed, the design is already constrained
+
+These constraints follow from what was measured here, so they carry forward even
+though the decision does not.
+
+*C1 — Never require Dart to participate in a synchronisation protocol.*
+This is F2 generalised, and it is the durable lesson. Dart has no atomics and no
+fences; any design whose correctness depends on the Dart side ordering its
+accesses or performing an atomic read-modify-write is unimplementable, however it
+is written. Two shapes survive:
+
+- *(i) Ownership transfer, not sharing.* Go fills a buffer and hands Dart a
+  snapshot it will not touch again until Dart gives it back. Synchronisation
+  happens on the *call boundary*, which is ordered, instead of in shared memory,
+  which is not. This is the shape that works in a language with no atomics.
+- *(ii) Single-writer, append-only, with the index delivered out-of-band* — over
+  a method return or a port message, never through a shared mutable flag like
+  =IsFull=.
+
+*C2 — Generate the binding; never hand-write it.* F9 measured that Dart FFI
+accepts a wrong typedef with no error at lookup or call time. An unchecked
+contract should not be maintained by hand. Flutter ships the mechanism:
+=flutter create --template=plugin_ffi= produces a =ffigen.yaml= and a
+=…_bindings_generated.dart=, generating the Dart bindings *from the C header* —
+and cgo already emits that header (=libgo.h=). The mismatch becomes structurally
+impossible rather than merely unlikely.
+
+*C3 — Use the plugin_ffi template's packaging, not a hand-rolled CMake block.*
+Verified in the installed SDK: the template carries per-platform build files for
+Android, iOS, Linux, macOS and Windows and bundles through a
+=<name>_bundled_libraries= variable. That is precisely the five-platform matrix
+F7 and F8 show the blueprint getting wrong, already solved upstream. And note
+=DynamicLibrary.open= resolves through the loader's search path, not the working
+directory — packaging is not "put the file nearby".
+
+*C4 — =recover()= at every =//export= boundary — and know exactly what it does
+not buy.* Measured (F4): a =defer recover()= converts a Go panic into a polite
+error return and the Dart VM continues healthy across repeated calls. So this is
+mandatory and it *works*. But it catches only the *panic* class. A bad address
+from the caller produces =fatal error: fault=, which =recover()= does not catch
+and which kills the process anyway.
+
+The design consequence is therefore not "add recover and relax". It is:
+*validate every argument before it can fault* — non-nil, in-range length,
+capacity consistent with the allocation, alignment — because the faults that
+matter here are the ones a caller induces, and those are unrecoverable. Recover
+is the backstop for Go's own bugs; argument validation is the actual defence.
+
+*C7 — If a Go fault must not take down the UI, that requires a process boundary,
+not better error handling.* Measured (F4b): the =.so= runs *in the Dart VM's own
+process* — same PID — and signal disposition is per-process, so the Go runtime's
+handlers cannot be scoped to the library. Panic isolation is achievable; fault
+isolation is not.
+
+This is the one place the material's *rejected* Architecture 2 (separate
+processes over POSIX shm) has a genuine advantage, and it goes unmentioned there:
+a crashing Go side takes down a daemon that can be restarted, not the user's
+window. So the choice between the two architectures is not merely
+"complexity vs. permissions" as its comparison table frames it — it is a
+*fault-containment* decision, and that belongs in the trade whenever this comes
+back. Note also that ownership transfer (C1(i)) composes with either.
+
+*C5 — Data path shaped like a data path.* Two =copy()= calls over the contiguous
+spans, power-of-two capacity, mask not modulo. Measured 15–20x against the
+byte-loop alternative (F6).
+
+*C6 — If it is a ring at all, use monotonic 64-bit sequence counters that never
+wrap*, masked only on access: =head == tail= is empty, =head - tail == capacity=
+is full, and there is *no shared flag*. This removes F3's defect and C1's
+cross-runtime read-modify-write in one move — which is the tell that the
+=IsFull= flag was a design error rather than a coding slip.
+
+** 6.5 The rescue that works — and why it inverts the material's conclusion *[MEASURED]*
+
+The obvious objection to F2 is: *Dart has no atomics, but Dart can call C — so
+supply the atomics in a native library and let Dart load it.* That is the right
+instinct, it was built and measured 2026-09-04, and *it works*. It also lands on
+a different architecture than the one the material recommends.
+
+*** It genuinely fixes F2
+A ~50-line C11 shim (=atomic_load_explicit= / =store= / =compare_exchange= behind
+a C ABI) gives Dart real acquire/release semantics. Cost, measured from Dart over
+2,000,000 iterations each:
+
+| operation | ns | vs a plain read |
+|-----------+----+-----------------|
+| =ByteData.getUint64= — *not atomic*, what the blueprint does | 2.46 | 1.0x |
+| =at_load_u64= via FFI, =isLeaf: true= | *7.38* | 3.0x |
+| =at_load_u64= via FFI, non-leaf | 17.41 | 7.1x |
+| =at_store_u64= via FFI, =isLeaf: true= | 4.23 | 1.7x |
+
+*An acquire load from Dart costs about 7 ns.* That is affordable. F2 is a
+property of the Dart SDK, not a law of nature, and this is the way around it.
+(=isLeaf: true= is the difference between 3x and 7x — it skips the safepoint
+transition. It is available in this SDK and it matters.)
+
+*** But it argues against letting Dart hold the protocol at all
+Once a native shim exists, the cheap move is to let it run the *whole* read, not
+just the atomics. Measured, same library, whole SPSC protocol in C, one FFI call
+per batch:
+
+| chunk | ns per write+read pair | ns/byte |
+|-------+------------------------+---------|
+| 64 B | 12 | 0.091 |
+| 512 B | 21 | 0.021 |
+| 4096 B | 98 | *0.012* |
+
+*A 4 KB batch moves in 98 ns.* A per-index atomic load from Dart is 7.38 ns
+*each* — so a Dart-side loop consulting the head per byte is roughly **600x**
+worse per byte than handing the whole batch to native code. The performance
+argument and the correctness argument (C1) point the same way: *Dart should not
+participate in the protocol; it should make one call and receive bytes.*
+
+*** The shim must be C, not Go
+Measured side by side in the same process:
+
+| library | size | signal handlers added |
+|---------+------+-----------------------|
+| C atomics + ring shim | *15,976 B* | *none — =SigCgt= unchanged* |
+| Go =c-shared= | 2,487,880 B | SIGFPE, SIGPIPE, SIGURG |
+
+*156x larger, and it mutates the host's signal disposition* (F4b). If what is
+needed is atomics and a ring, the Go runtime buys nothing and costs both. Reach
+for Go in the UI process only when Go *code* must run there.
+
+*** Atomics fix the memory model, NOT the protocol
+Worth stating because it is easy to assume otherwise: F3 is a *logic* defect (the
+unconditional =IsFull = 0=), and no amount of atomicity repairs it. The C6
+redesign does. Verified against the C implementation — monotonic 64-bit counters,
+power-of-two capacity, no =IsFull= field at all:
+
+: fill to capacity      -> wrote 65536
+: write into full ring  -> -1   REFUSED (correct)
+: zero-length read      -> 0
+: write again after it  -> -1   STILL REFUSED (F3 fixed)
+: drain                 -> read 65536
+: write after drain     -> 8    (space reclaimed)
+
+The exact sequence that destroys 8 bytes under the blueprint (§4 F3) is inert
+here.
+
+*** And shm delivers C7 — fault isolation — as well
+The same shim mapping POSIX shared memory puts the producer in a *separate
+process*, which is what C7 says is required and what =recover()= cannot provide.
+Demonstrated end to end: a C producer in its own process writing into the ring, a
+Dart reader mapping the same segment, and the producer then *deliberately
+segfaulting*:
+
+: Dart pid=1916181 mapped /eval_ring, ring initialised
+: [writer pid 1916199] wrote 23 bytes                    (x5)
+: [dart reader] got 46 bytes: "msg-0-from-pid-1916199;msg-1-from-pid-1916199;"
+: ...
+: [writer pid 1916199] now deliberately crashing
+: --- writer exited with -11  (SIGSEGV — it crashed) ---
+: [dart reader] still alive; final read=0, total=115 bytes
+: DART SURVIVED THE PRODUCER CRASH
+
+All 115 bytes delivered, in order, no loss — *and the consumer outlived a
+producer that took SIGSEGV*. Under the in-process design (F4b) that same fault
+ends the UI.
+
+*** What this means for the disposition
+It does not change §6.0 — the supplied artifacts are still rejected, and F1/F2/F3
+are untouched. What it changes is the *shape* of the answer if the §6.3 gate is
+ever passed:
+
+- The rescue promotes *Architecture 2* — separate process, shm, atomics — from
+  "has an unmentioned advantage" (C7) to *the recommended shape*. It satisfies
+  F2 (real atomics), F3 (via C6), and C7 (crash containment) simultaneously, and
+  it needs no Go build matrix inside the app.
+- The material recommended the opposite — in-process FFI — and dismissed IPC on
+  complexity and a false permissions claim (F11). *Measured, the dismissed option
+  is the better one*, and the total machinery is one small C file.
+- §6.2 still comes first. This is what to build *if* the gate is passed, not a
+  reason to pass it.
+
+*Honest limit.* The hardware ordering is correct by construction (C11 acquire /
+release emit the right barriers). What was *not* verified is whether a leaf FFI
+call also constrains the *Dart compiler* from reordering subsequent typed-data
+reads across it. That question only arises if Dart reads payload bytes directly
+after an acquire load — and the batched design above removes it entirely, which
+is a further reason to prefer it over handing Dart the atomics and trusting it to
+sequence its own reads.
+
+** 6.7 The mobile half, and what remains unproven
+
+Two companion documents carry what does not belong in an evaluation of these
+artifacts:
+
+- [[file:gomobile-embedding-option.org]] — the =gomobile= route for keeping Go on
+  mobile, written from *two shipping in-family precedents* (=notekeep=, 2 bound
+  functions + a Unix socket; =voicelab=, 20 bound functions returning JSON
+  strings). Its load-bearing conclusion for §6.5: *the separate-process shm
+  design is desktop-only*, because Android's sandbox permits no exec'd second
+  process. Fault isolation (C7) is therefore a desktop property, which makes
+  =recover()= *more* important on mobile, not less.
+- [[file:research-todo-gomobile-shm-atomics.org]] — the research plan for the
+  "prove it across tools" question. One leg is *proven*: Go's =sync/atomic=, C11
+  =stdatomic= and Dart agree on one shm ring across a process boundary — 20,000
+  messages, 0 gaps, 0 duplicates, re-run under forced contention. Nine legs
+  remain, and the cheapest two (Android and iOS shm/process policy) can end the
+  mobile half outright.
+
+** 6.6 What this disposition explicitly declines
+
+- Building =pkg/sharedring=, or any shared-memory transport, now.
+- Adopting or repairing the supplied files.
+- Designing a transport tier ahead of a demonstrated consumer — D4's verdict,
+  unchanged and reinforced.
+
+* 7. Options considered
+
+| option | what it means | verdict |
+|--------+---------------+---------|
+| Adopt the blueprint as the implementation plan | build =pkg/sharedring= from these listings | *rejected* — F1, F2 disqualify; F3/F6 are design-level |
+| Repair the listings and adopt | fix the compile error, the flag, the copies | *rejected* — F2 is not repairable in Dart; repair would launder unreviewed material into reviewed-looking code |
+| Keep as reference, build nothing | retain the docs, act on none of it | *viable* — see §8 |
+| Discard | delete the directory | *viable* — see §8 |
+
+*Reversibility, and it is asymmetric enough to decide the matter on its own.*
+Not building is nearly free to undo: the decision is a document, and §6.3 states
+the exact conditions that would reopen it. Building is not. An FFI boundary that
+ships becomes a contract — the header is an ABI, the memory layout is a wire
+format, both halves of the build matrix acquire per-platform toolchain
+requirements, and un-adopting means unwinding every consumer's boundary. This is
+the same asymmetry D4 found decisive for the transport codegen tier, and it
+points the same way here.
+
+* 8. Disposition — the decision that needs approval
+
+The technical verdict (§6) does not depend on this; it is only about what happens
+to the 120 KB on disk.
+
+*** Option A — commit the directory as-is, alongside this evaluation
+Keeps the primary sources next to the finding that rejects them, so a future
+session that rediscovers these files finds the verdict attached.
+Cost: commits 120 KB including three PDFs and code that does not compile. Risk:
+someone later reads =ring_buffer.go= without reading this document. Mitigate by
+adding a =README.org= in the directory pointing here.
+
+*** Option B — commit this evaluation only; delete the directory *(recommended)*
+The evaluation quotes every load-bearing claim it rejects, so the sources are not
+needed to audit the finding. Nothing that does not compile enters the tree.
+Cost: the PDFs are gone unless they exist elsewhere.
+
+*** Option C — commit the evaluation; move the sources outside the repo
+e.g. =~/org/archive/=. Same tree hygiene as B, keeps the originals.
+Cost: a second location to remember.
+
+*Recommendation: B*, with C as the answer if the PDFs have no other copy. The
+argument for B is the one this evaluation keeps making about the material itself:
+code that has never been compiled should not sit in a repository looking like
+code, and a =README.org= warning is a hand-maintained artifact that will
+eventually be read after the file it guards.
+
+*This is the user's call and nothing has been deleted or moved.* The directory is
+untracked and exactly as it was found.
+
+* 9. Source Verification Notes
+
+** Verified — commands given, run 2026-09-04 on this host
+
+*** F1 — the Go does not compile
+: $ eval "$(go-version path)"; go version
+: go version go1.27.0 linux/amd64
+: $ cp shared-buffer-information/ring_buffer.go $TMP/ && cd $TMP
+: $ CGO_ENABLED=1 go build -buildmode=c-shared -o libgo.so ./ring_buffer.go > build.log 2>&1
+: $ echo $?
+: 1
+: $ cat build.log
+: ./ring_buffer.go:34:2: declared and not used: tail
+: $ ls libgo.so
+: ls: cannot access 'libgo.so': No such file or directory
+
+Exit code read with =$?= on the command itself. An earlier run of the same build
+piped into =head= reported =rc=0=, which is =head='s status — recorded because it
+is the exact pipeline artifact the scanner rule warns about, and it would have
+made this finding invisible.
+
+Note the toolchain here is go1.27.0 while =frameworks/go='s =go= directive is
+1.26.5. The finding is version-independent: an unused local has been a compile
+error in every Go release.
+
+*** F1 (contrast) — the Dart analyzes clean
+: $ dart analyze --no-fatal-warnings .      # ring_buffer.dart in a bare package
+: Analyzing ....
+: No issues found!
+: TRUE EXIT: 0
+
+*** F2 — Dart exposes no atomics or fences
+Against =$HOME/flutter/bin/cache/dart-sdk=, =version= file reports *3.12.2*.
+: $ grep -rniE 'atomic|memory[ _]?fence|barrier' $SDK/lib/ffi/*.dart
+: (no output — 11 files searched)
+: $ grep -rlni 'atomic' $SDK/lib/ --include='*.dart' | grep -v '_internal|_http|dev_compiler'
+: web_sql/dart2js/web_sql_dart2js.dart
+: html/dart2js/html_dart2js.dart
+: io/link.dart
+: core/regexp.dart
+: developer/extension.dart
+All five hits are unrelated (regexp atomic groups; =Link= "atomically" as a
+filesystem property; DOM/web-SQL bindings). No atomic load/store, no CAS, no
+fence primitive exists in the public SDK.
+
+*** F3, F4 — reproduced END TO END (second verification round, 2026-09-04)
+The first round used a Go *port* of the Dart reader as a model. That is now
+superseded by a real end-to-end harness, and the two agree exactly.
+
+Build: =ring_buffer.go= verbatim except for dropping the unused =tail=
+declaration — the minimum change that makes F1's code compile, confirming F1 is
+the *only* compile error — built =CGO_ENABLED=1 go build -buildmode=c-shared -o
+libgo.so=, exit 0.
+
+Dart: the *verbatim* =RingBufferController= from =ring_buffer.dart=, plus the
+binding layer the material omits (F9), written against the cgo-generated
+=libgo.h=. Dart 3.12.2, =package:ffi= 2.2.0, arena allocated with
+=calloc<Uint8>(32 + capacity)= as the sibling document specifies.
+
+F3 output quoted in §4. F4:
+: DART PROCESS EXIT: 134   (SIGABRT, core dumped)
+with the Dart =catch= block never entered and the following =print= never
+reached — the call was wrapped in =try/catch= specifically to test whether Dart
+could defend itself. It cannot.
+
+Harnesses retained in a scratch directory outside the repo, for the life of the
+job (=e2e/=: =bin/harness.dart=, =bin/abi2.dart=, =ring_buffer.go=, =libgo.so=)
+and (=rbdemo/=: round-one Go port).
+
+*** F4 (recover), F4b (process model, signals) — third verification round, 2026-09-04
+Prompted by the question "did you evaluate recover() and signal handling, is the
+=.so= a subprocess, and can it have its own signal/panic handling?" — none of
+which the first two rounds had tested.
+
+A second Go =c-shared= library (retained in a scratch directory outside the
+repo, =guard/=) exporting matched guarded and unguarded entry points, plus
+=GoPid=, driven from Dart:
+
+: Dart pid=1790143   Go os.Getpid()=1790143   SAME PROCESS
+
+: [go] recovered: runtime error: index out of range [0] with length 0
+:   GuardedWrite returned -2  (Dart still running)
+:   retry 0 -> -2 ; retry 1 -> -2 ; retry 2 -> -2      # VM healthy afterwards
+: [go] recovered nil deref: runtime error: invalid memory address or nil pointer dereference
+
+: --- guarded WILD deref (a genuine bad address) ---
+: unexpected fault address 0xdeadbeef
+: fatal error: fault
+: [signal SIGSEGV: segmentation violation code=0x1 addr=0xdeadbeef]
+:   [dart exit: 134]                                   # recover() in place, did not help
+
+: --- unguarded, same input as the guarded case ---
+:   [dart exit: 134]
+
+Signal disposition read from =/proc/self/status= (=SigCgt=) immediately before
+and after =DynamicLibrary.open=, decoded with =signal.Signals=:
+
+: before dlopen : SIGBUS SIGILL SIGQUIT SIGSEGV SIGTRAP sig33
+: after  dlopen : ... plus SIGFPE SIGPIPE SIGURG
+: ADDED by Go   : SIGFPE SIGPIPE SIGURG
+: REMOVED       : (none)
+
+*** F6 — benchmarked
+=go test -run '^$' -bench . -benchtime 2s -count 3=, 4 KB payload into a 64 KB
+ring; the blueprint's byte-loop-with-modulo against two =copy()= calls with a
+mask. Table in §4. *Conditions: this host was running a background job
+throughout*, which is why the spread is wide (=BenchmarkTwoCopiesMask= ranged
+277.5–710.6 ns/op across three runs). The ratio is the finding; the absolute
+numbers are indicative, not a machine baseline. Same concurrency confound
+=performance-baseline.org= §0 documents.
+
+*** F7 — verified against Flutter's own template
+=grep -rn 'INSTALL_BUNDLE_LIB_DIR' $HOME/flutter/packages/flutter_tools/templates/=
+→ =app/linux.tmpl/CMakeLists.txt.tmpl= lines 96, 104, 109, 116, 130 and the
+Windows equivalent. Also =flutter create --template=plugin_ffi= (C2/C3): template
+present in the installed SDK at =templates/plugin_ffi/= with =ffigen.yaml.tmpl=,
+=lib/projectName_bindings_generated.dart.tmpl=, and per-platform build files for
+android / ios / linux / macos / windows.
+
+*** F8 — measured
+=go env CGO_ENABLED= → host =1=, =GOOS=android= =0=, =GOOS=ios= =0=. Both
+blueprint commands run verbatim: exit 1, =go: no Go source files=. With
+=CGO_ENABLED=1= and no target =CC=: exit 1, host gcc failing on =gcc_arm64.S=.
+
+*** F9 — measured, and it CORRECTED this document
+Header read from the cgo build: =typedef GoInt64 GoInt=, =typedef long long
+GoInt64=, =extern GoInt GoWritePayload(void*, void*, GoInt)=. The =Int32= vs
+=Int64= comparison (table in §4) bound both typedefs to the same symbol and
+called each with a fresh buffer per call. Both typedefs resolved without error
+and produced identical results at every input tested, including one exceeding
+32 bits.
+
+*** Document identity (§2)
+: $ pdftotext shared_memory_guide-original.pdf - | head -30
+: $ pdftotext shared_memory_guide-v2.pdf - | head -30
+Distinct titles and section structures, quoted in §2. And:
+: $ awk '/begin_src go/{f=1;next}/end_src/{f=0}f' …blueprint.org > /tmp/x.go
+: $ diff /tmp/x.go ring_buffer.go     # 3 comment lines present only in the .go
+
+*** Quotations from this repo's own docs (§5)
+=docs/flutter-concurrency-and-paging.org= §4b.3, §4b.4, §6;
+=docs/open-decisions-brief.org= "Cross-cutting observation" and §4.7;
+=docs/performance-baseline.org= §0–§3. All read in full at the cited sections;
+quotations are verbatim.
+
+** Judgement, not measurement
+- F5 (ARM acquire/release) — reasoned from the architecture's memory model and
+  F2's verified absence of a Dart acquire. *Not reproduced on ARM hardware or an
+  emulator in this session*, and deliberately not load-bearing: F3 destroys data
+  on x86-64, so the verdict does not rest on it.
+- F7's second half — the =install()= requirement is verified against Flutter's
+  template, but *no Flutter desktop application was built end to end*, so "the
+  fragment breaks a real runner build" remains inference. The
+  =DynamicLibrary.open= search-path failure inside it *was* measured.
+- F8 — the two failure modes are measured; the *remedy* (an NDK clang wrapper,
+  an iOS clang with =-isysroot=) is stated from the requirement, not demonstrated.
+  No NDK or iOS toolchain was invoked.
+- F10, F12 — architectural reading of the supplied code and of what it omits.
+- §6's disposition and §8's ranking are judgement built on the verified
+  findings, not measurements themselves. In particular *§6.4's constraints are
+  design consequences of measured facts, not themselves tested designs* — no
+  ownership-transfer or plugin_ffi implementation was built here.
+
+** Not verified — do not present as findings
+- *Anything about Flutter specifically.* The harness ran under the standalone
+  Dart VM, not a Flutter engine process. F3/F4/F4b/F9 are properties of Dart +
+  cgo and carry over; anything involving the Flutter *engine* — its build, its
+  isolate setup, its own signal use, its platform threads — does *not* follow
+  from this session. The Flutter engine catches more signals than the bare VM,
+  so F4b's mask delta would differ there and was not measured.
+- *Whether the chaining measured in F4b is benign in practice over a long-lived
+  UI process.* One short standalone run showing no clobbering is weak evidence
+  about a process that lives for hours, uses platform threads, and takes SIGURG
+  preemptions continuously. "Go chains" is verified; "and therefore it is fine"
+  is not.
+- Flutter hot restart, isolate-boundary pointer sharing, iOS/Android runtime
+  behaviour (F12) — none exercised.
+- *End-to-end throughput of this design versus the §6.2 alternative.* F6
+  benchmarks one inner loop in isolation; it says nothing about which
+  architecture is faster overall, and no such comparison was made. No frame-time
+  measurement was taken, and none exists in this repo (§5).
+- Whether ARM reordering actually manifests (F5) — see above.
+- *Whether a leaf FFI call constrains the DART COMPILER* from reordering
+  subsequent typed-data reads across it (§6.5). The *hardware* ordering is
+  correct by construction (C11 acquire/release emit the right barriers); the
+  compiler-level question was not tested and would need a targeted experiment or
+  a VM-source reading. It only bites if Dart reads payload bytes directly after
+  an acquire load, which the batched design in §6.5 avoids entirely.
+- *Everything in §6.5 was measured on x86-64 Linux under the standalone Dart VM.*
+  The FFI-call costs in particular are platform- and mode-sensitive (JIT here;
+  AOT and mobile will differ) and should be re-measured before being used to
+  size anything.
+- That the §6.4 constraints produce a working design. They are consequences of
+  measured facts; *none has been implemented or tested here.*
+- The provenance of the nine files — who or what generated them, and when.
+
+** Corrections made during this session
+- Initial build read as =rc=0= through a pipe; re-run and corrected to exit 1
+  (§9, F1). The corrected reading reverses the conclusion.
+- Initially treated =-original= / =-v2= as revisions of one guide; text
+  extraction showed three independent documents (§2).
+- *F9 overstated, corrected in round two.* First draft: a mismatched =ffi.Int32=
+  typedef "would silently corrupt the argument". Measured: it does not, on
+  x86-64, at any value tested. *Claim withdrawn* and replaced with the stronger
+  and better-supported one — that Dart FFI accepts either typedef with no error,
+  so the mismatch is undetectable rather than manifest.
+- A predicted "silently truncated to 4" annotation in the first ABI probe was
+  wrong — the call returned 64, i.e. the full 64-bit value reached Go. Re-run
+  cleanly with a fresh buffer per call before drawing the conclusion above.
+
+- *F4 overstated, corrected in round three.* The draft read as though the process
+  abort were inherent to the boundary ("no defensive measure available"). It is
+  not: =recover()= at the =//export= boundary converts the panic to an error
+  return and Dart continues healthy — measured. F4 is a *defect of the supplied
+  code*. What survives is narrower and was not in the draft at all: the fault
+  class (=unexpected fault address=) is unrecoverable *even with recover in
+  place*, and that is the class a caller-supplied bad pointer lands in.
+- *F12's signal-handler bullet was too dark, corrected in round three.* "A known
+  source of hard-to-diagnose crashes" implied clobbering. Measured: Go *chains* —
+  it added SIGFPE/SIGPIPE/SIGURG and removed nothing Dart had.
+
+*Direction of error, noted because it matters.* Round one produced one
+overstatement (F9) and zero understatements, matching the asymmetry the
+"recorded claims are timestamped hypotheses" rule predicts — error runs toward
+*more* certainty. Round two upgraded F3, F4, F6, F7, F8 from inspection to
+measurement and withdrew F9's unsupported half.
+
+*Round three found two more overstatements, both mine, both in the same
+direction* — and both only because a reader asked what had actually been tested
+rather than accepting the finding. Three rounds, three corrections, every one
+toward less alarm and more precision. The verdict (§6) did not move, because it
+never rested on F4 or F12; but the *design constraints* did move, materially —
+C4 was rewritten and C7 added, and C7 credits the separate-process architecture
+with a property this document had previously helped bury.
+
+* Glossary
+- SPSC :: single-producer single-consumer — one writer, one reader, the shape
+  this ring buffer assumes but never states.
+- =c-shared= / =c-archive= :: Go build modes emitting a C-ABI shared library or
+  static archive; both require cgo and, when cross-compiling, a target =CC=.
+- acquire / release :: memory-ordering guarantees pairing a reader's load with a
+  writer's store. Go's =sync/atomic= provides both; Dart provides neither (F2).
+- zero-copy :: data read in place out of a mapped buffer without an intervening
+  copy. The material's title claim; the code performs two copies (F6).
+- deep copy (gomobile) :: =gomobile bind= marshals through JNI/Obj-C wrappers,
+  copying payloads across the runtime boundary — the true observation the
+  material is built around.
+
+* Index
+- Does-not-compile → §4 F1
+- Dart has no atomics (the disqualifying finding) → §4 F2
+- Silent data loss via the shared =IsFull= flag → §4 F3
+- Go panic aborts the Flutter process → §4 F4
+- ARM weak ordering → §4 F5
+- "zero-copy" contradicted by two byte-wise copies → §4 F6
+- Build/packaging errors (CMake, cross-compile, no binding) → §4 F7–F9
+- Why the mechanism is not wanted here → §5
+- Design disposition (the positive position) → §6
+- The three-way conflation to undo → §6.1
+- Entry conditions for revisiting FFI → §6.3
+- Constraints if the gate is ever passed (C1–C7) → §6.4
+- Process model: the =.so= is NOT a subprocess → §4 F4b
+- =recover()= works for panics, not for faults → §4 F4, §6.4 C4
+- Signal disposition is per-process; Go chains → §4 F4b, §6.4 C7
+- Fault isolation needs a process boundary → §6.4 C7
+- "Never make Dart participate in synchronisation" → §6.4 C1
+- =plugin_ffi= + =ffigen= instead of hand-written bindings → §6.4 C2, C3
+- Withdrawn claim (Int32/Int64 corruption) → §4 F9, §9 Corrections
+- What to do with the files (needs approval) → §8
+- =ring_buffer.go= → §4 F1, F3, F4, F6
+- =ring_buffer.dart= → §4 F2, F3, F6
+- =shared_memory_guide-v2= → §2, §4 F2, F11
+
+* Cross-References
+- Prior position on FFI vs. Go-pre-digests: [[file:flutter-concurrency-and-paging.org]] §4b.3, §4b.4
+- Transport tier and the two-consumer rule: [[file:open-decisions-brief.org]] D4, "Cross-cutting observation"
+- Transport surface: [[file:transport-design-surface.org]]
+- Measurement conditions and negative results: [[file:performance-baseline.org]]
+- The mobile route: [[file:gomobile-embedding-option.org]]
+- Open investigations: [[file:research-todo-gomobile-shm-atomics.org]]
+- Session: [[file:sessions/2026-09-04-docs-shared-buffer-evaluation.org]]
+
+* Footnotes
+[fn:sdk] Dart SDK version read from
+=$HOME/flutter/bin/cache/dart-sdk/version= → =3.12.2=. The absence of
+atomics is a property of the SDK as installed; re-derive with the greps in §9
+rather than trusting this line if the SDK is upgraded, per the "recorded claims
+are timestamped hypotheses" rule.

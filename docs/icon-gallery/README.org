@@ -1,0 +1,79 @@
+#+title: Family icon gallery
+#+date: 2026-08-29
+
+One generation point for every app icon in this family, and a page for
+checking the results with your eyes and with numbers.
+
+* Use
+
+: make          # render everything, re-measure, refresh sample.json
+: make open     # view index.html
+
+=index.html= shows each app's SVG beside all six hicolor PNG sizes at
+*actual pixel size*, plus a 4x nearest-neighbour magnification of the three
+smallest. A contact sheet that scales everything up hides exactly the failure
+it should catch, so it does not.
+
+* Why the specs live here and the icons live in the repos
+
+The specs and the font are here; each consuming repo receives only the
+GENERATED =.svg= / =.png=. That keeps *one licensed font in one place*
+instead of a copy per repo, which is the difference between one licence
+obligation and seven.
+
+=fonts/KleeOne-SemiBold.ttf= ships with =fonts/KleeOne-OFL.txt= beside it,
+and its name IDs 13/14 (licence, licence URL) are intact — check with:
+
+: python3 -c "from fontTools.ttLib import TTFont; n=TTFont('fonts/KleeOne-SemiBold.ttf')['name']; print(n.getDebugName(13), n.getDebugName(14))"
+
+*Do not substitute =SarasaUiJ-Bold.ttf= from =notekeep/app/assets/fonts/=.*
+Measured 2026-08-29: its name IDs 13 and 14 are BOTH ABSENT and no Sarasa OFL
+file sits beside it, so that copy is an OFL font redistributed without its
+licence — the =fontTools=-drops-13/14 failure. KleeOne covers every glyph
+these icons use (Latin wordmarks, Ξ, 語, あ — all probed), so there is no
+reason to reach for it.
+
+* Reading the measurements
+
+| column | meaning |
+|--------+---------|
+| =corner= | must be =a0=. Anything else means the rounded tile is bleeding square corners. |
+| =centre= | the pixel at the middle — a quick identity check between renders. |
+| =colors= | distinct opaque colours; collapses toward zero if artwork failed to draw. |
+| =ink=    | share of opaque pixels differing from the tile by >30 per channel. |
+
+*=ink= uses the MODAL opaque colour as the background, not a sampled point.*
+An earlier version sampled top-centre, which IS artwork for netroute-manager
+(ingress box), cross-bridge (screen) and voicelab (speech bubble) — so the
+true tile counted as ink and all three read above 80%, looking like a design
+collapse that was not happening. The tile is by construction the largest flat
+region, so the mode is the robust estimator. Verify an instrument before
+trusting what it says about the thing being measured.
+
+* Glyphs are checked, not assumed
+
+=gen-icon= fails loudly on a missing glyph (=font ... has no glyph for "s"=)
+rather than rendering =.notdef=, which is how the voicelab spec was found
+pointing at =GentiumPlus-VoiceMark.ttf= — a *generated* subset font absent from
+a clean tree — and how textloom's Gentium was found subset past the letter =s=.
+A spec that renders is a spec whose fonts actually cover its text.
+
+* Apps
+
+| app | design |
+|-----+--------|
+| ghk | gateway hub and spokes |
+| word-bank | open book, 語 wordmark |
+| voicelab | speech bubble + waves; あ over =vl= |
+| mountbridge | folder + network nodes |
+| cross-bridge | display + network + penguin + apple, Ξ wordmark |
+| netroute-manager | one ingress, three backends |
+
+All six use the =slate= family palette (=gen-icon --palettes=).
+
+* Cross-References
+
+- Generator: =../../go/cmd/gen-icon=, spec types in =../../go/pkg/iconspec=
+- Icon resolution is BY NAME from the installed XDG theme, never from the
+  repo — see the Linux Desktop Integration rule before debugging a "wrong
+  icon", and sample the INSTALLED file, not this directory's copy.

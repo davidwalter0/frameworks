@@ -1,0 +1,66 @@
+# Environment prerequisites for this repo, and what each one's ABSENCE means.
+#
+# Verified by `go run ./go/cmd/deps verify`. See go/pkg/deps for why this
+# exists: a census found ~100 hand-rolled `command -v` checks across 38 repos,
+# and — the actual defect — the same missing tool handled four incompatible
+# ways, so `make lint` meant something different in each repo.
+#
+# The policy is the content. Presence is a fact; absence is a decision, and
+# that decision belongs here where it can be read and disagreed with, not
+# buried in a shell `|| true`.
+#
+# NOT LISTED, deliberately:
+#   go, make  — bootstrap. A Go program cannot check whether Go exists; those
+#               two stay inline shell checks in the Makefiles.
+#   Go/Dart libraries — go.mod and pubspec already resolve, lock and audit
+#               them. Restating them here would create a second source of
+#               truth that can disagree with the first.
+
+requires:
+  # --- go/ ---------------------------------------------------------------
+  - tool: golangci-lint
+    policy: required
+    why: the lint stage IS this tool; absent, the stage did not run
+    install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+    profiles: [check]
+
+  - tool: govulncheck
+    policy: required
+    why: the vuln stage is a gate, not a report
+    install: go-version tools install govulncheck
+    profiles: [check]
+
+  # --- ui/ ---------------------------------------------------------------
+  # osv-scanner and jq back ui/tools/osv-gate.sh, which already treats
+  # tool-absence as its own exit path. Both are required for the same reason
+  # govulncheck is: the Dart vuln stage cannot report a pass it never computed.
+  - tool: osv-scanner
+    policy: required
+    why: the Dart vulnerability gate reads its JSON; pin the TOOL version, never @latest
+    install: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.3.8
+    profiles: [check]
+
+  - tool: jq
+    policy: required
+    why: osv-gate.sh classifies findings by severity and fixability with it
+    install: apt install jq
+    profiles: [check]
+
+  # lcov is the one genuine optional here, and the existing Makefile comment
+  # already says why: the coverage PROFILE is written either way, lcov only
+  # renders a summary of it. Nothing is lost when it is absent, so this is a
+  # reported skip rather than a failure.
+  - tool: lcov
+    policy: optional-skip
+    why: renders a summary of the Dart coverage profile, which is written regardless
+    install: apt install lcov
+    profiles: [check]
+
+  # --- docs/icon-gallery -------------------------------------------------
+  # The desktop redoes this work at next login, so absence costs nothing. This
+  # is the one place `|| true` was the right answer, and it is now said out
+  # loud instead of implied.
+  - tool: gtk-update-icon-cache
+    policy: best-effort
+    why: refreshes the hicolor cache after an icon install; desktops rescan at next login
+    profiles: [dist]

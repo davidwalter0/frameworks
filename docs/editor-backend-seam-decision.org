@@ -1,0 +1,197 @@
+:PROPERTIES:
+:ID:       frameworks-editor-backend-seam-decision
+:END:
+#+title: EditorBackend seam — which one landed, and what the other is for
+#+date: 2026-09-13
+#+STARTUP: align indent
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-09-13
+:END:
+
+** Status
+LANDED: =arm/dart-seam= is the =EditorBackend= seam in =desktop_kit=
+(=cb9310f=, =ui make check= rc=0, 1987 tests, osv-gate PASS).
+
+=arm/go-seam= is NOT landed and its branch is KEPT. It is not a rejected
+alternative — its shape answers a question this seam does not, and it is
+expected to return as an ADDITIONAL, OPTIONAL interface (§6).
+
+** Next Steps
+- [ ] design the optional interface that carries go-seam's capability (§6)
+- [ ] textloom's paired arm =arm/dart-seam= holds the implementer; decide whether
+  it lands with this or waits on the wider experiment (§3)
+
+* 1. What was decided
+
+=desktop_kit= gains ONE =EditorBackend= seam, taken from =arm/dart-seam=.
+
+Two frameworks branches independently ADDED the same new file,
+=ui/pkg/desktop_kit/lib/src/editor/editor_backend.dart=, with 289 differing
+lines. Rebasing either onto the other produced an =add/add= conflict on that
+file plus a content conflict in =emacs_buffer.dart= — so only one could land as
+written. Both were gated green first (1975 and 1963 tests), making this a
+design choice, not a quality one.
+
+* 2. THE AXIS IS BUFFER OWNERSHIP, not implementation language
+
+The branch names mislead, and this is the single most important thing on this
+page. They do NOT mean "a seam written in Dart" versus "a seam written in Go".
+Both are Dart files in =desktop_kit=. The axis is *who owns the buffer*:
+
+| arm     | who owns the buffer      | how state moves                         |
+|---------+--------------------------+-----------------------------------------|
+| dart-\* | =EmacsBuffer= (Dart)     | per command, via =EditorBackendRequest= |
+| go-\*   | the Go runtime           | mirrored, kept current by =syncEdit=    |
+
+That is why the two APIs differ the way they do:
+
+#+begin_src dart
+// arm/go-seam — the backend holds its own copy, so it must be told about
+// every edit it did not make:
+Set<String> get claims;
+EditorBackendResult? run(String intentId, {required String previousCommand});
+void syncEdit(String text, int caret,
+              {int? at, int? removed, String? inserted, bool reload = false});
+
+// arm/dart-seam — the buffer stays authoritative and hands over only what one
+// command needs:
+bool supports(String intentId);
+Future<EditorBackendResult> run(EditorBackendRequest ...);
+#+end_src
+
+=syncEdit='s =reload= flag exists because a mirror can drift. A per-request
+design has nothing to drift.
+
+*Confidence:* the API shapes are measured from the two files. The
+ownership READING is inferred from those shapes plus the textloom arm commit
+subjects (§3) — it is not quoted from a design statement, and no claim-register
+document for the experiment was found on textloom's =main=.
+
+* 3. This is the kit half of a SIX-ARM experiment in textloom
+
+The frameworks seam is not a standalone design. textloom runs six branches, all
+routing *the same five editing intents* through a Go Emacs Lisp runtime,
+varying two things: how invasive the integration is, and who owns the buffer.
+
+| textloom arm         | subject                                                        |
+|-------------------+----------------------------------------------------------------|
+| =arm/dart-fork=     | fork the editor engine into textloom, route 5 intents through Go |
+| =arm/dart-override= | route 5 editing intents through the Go elisp runtime          |
+| =arm/dart-seam=     | drive five intents through the Go elisp runtime               |
+| =arm/go-fork=       | prove the web target degrades to the Dart engine              |
+| =arm/go-override=   | let the Go runtime own the buffer for five editing intents    |
+| =arm/go-seam=       | (session trace + claim-register rows for the arm)             |
+
+Underneath them: =feat/elisp-runtime= — "tools/elisp: evaluate Emacs Lisp out
+of process, via the Go runtime".
+
+*The arms are wired to frameworks by PATH.* textloom's =arm/dart-seam= carries
+"arm setup: resolve desktop_kit from this arm's frameworks worktree", so its
+=pubspec= points at
+=frameworks/.worktree/arm/dart-seam/ui/pkg/desktop_kit=. The two repos'
+same-named branches are two halves of one arm, and the frameworks worktree is
+load-bearing for textloom's build — not merely convenient. See §7.
+
+* 4. Why the landed one is the async, Dart-owned seam
+
+1. *A synchronous seam can only serve an IN-PROCESS backend.* The runtime this
+   experiment drives is out of process ("evaluate Emacs Lisp out of process,
+   via the Go runtime"), and a subprocess cannot be driven synchronously.
+   go-seam's =EditorBackendResult? run(...)= structurally excludes it.
+2. *It does not disturb the existing path.* The original synchronous
+   =EmacsBuffer.execute= is untouched and stays the unconditional default;
+   the seam is reached only through a new =executeAsync=. go-seam changes
+   dispatch itself ("record last-command per dispatch, not per execute").
+3. *Per-request state cannot desync.* It costs more traffic per command and
+   buys away a whole failure mode.
+
+* 5. CORRECTION — an earlier version of this document was WRONG
+
+A previous draft recorded, as a measured finding with a table of three
+"independent probes", that =GoElispBackend= did not exist and that the seam's
+doc comment cited a worked example that had never been written.
+
+*That was false.* It exists, on textloom's =arm/dart-seam=:
+
+| file                                  |
+|---------------------------------------|
+| =lib/go_elisp_backend.dart= (=class GoElispBackend implements EditorBackend=, line 92) |
+| =lib/emacs_buffer_editor.dart=        |
+| =test/go_elisp_backend_test.dart=     |
+| =test/go_elisp_backend_widget_test.dart= |
+| =tool/bench_go_backend.dart=          |
+
+*How the error was made, because the shape recurs:* the search was run over
+textloom's primary checkout with =grep -v '/.worktree/'= — it explicitly excluded
+the only place an in-progress implementation would live, then reported the
+absence as measured. A negative claim was produced by an instrument that could
+not have found the thing. The correct instrument for "does this exist anywhere
+in the repo" is =git grep <pattern> <every branch>=, not a filesystem grep of
+one checkout.
+
+So the seam lands with a real implementer, tests and a benchmark already
+written against it on the paired arm — which is stronger evidence for the
+design than the doc comment alone.
+
+* 6. =arm/go-seam= is KEPT, and is expected to come back
+
+Branch preserved at =ab481bc=, worktree intact. It is NOT merely an archived
+loser.
+
+Its capability — a backend that OWNS the buffer and is kept current by
+incremental edits — is a different question from the one the landed seam
+answers, and the landed seam cannot express it: =EditorBackendRequest= hands
+over a snapshot per command, so there is nowhere for a long-lived, buffer-owning
+backend to live.
+
+*Planned direction: add it as an ADDITIONAL, OPTIONAL interface* rather than
+replacing the landed seam — a backend that wants ownership implements the extra
+interface and receives =syncEdit=-shaped notifications; one that does not is
+unaffected, and =execute= stays the default for everything that sets no backend
+at all. Three seams' worth of behaviour behind one required interface plus one
+optional one, instead of two incompatible required ones.
+
+Design questions that must be answered before that lands, none settled here:
+- what happens when an owning backend and =EmacsBuffer= disagree — who wins,
+  and how is the disagreement detected rather than silently resolved;
+- whether =reload= is a fallback or an admission that the mirror is
+  unreconcilable;
+- whether an owning backend can also be asynchronous, or whether ownership
+  forces the in-process case (the go-\* arms exist to answer exactly this).
+
+* 7. FINDING: a merged-and-clean worktree can still be load-bearing
+
+During cleanup on 2026-09-13, eleven merged frameworks worktrees were removed
+under a gate that checked: zero commits ahead of =origin/main=, ancestor of
+=origin/main=, clean tree, no stashes. Every check passed.
+
+One of them — =.worktree/feat/emacs-regex-search= — was the =desktop_kit=
+source for textloom's branch of the same name, by absolute path in its pubspec.
+Deleting it left that textloom worktree pointing at a path that no longer exists.
+Nothing was lost (=32dad69= is in =origin/main=), but the build reference was.
+
+*The gate asked whether the worktree was finished IN ITS OWN REPO. It never
+asked whether anything ELSE pointed at it.* Any repo whose sibling resolves a
+package by worktree path has this exposure, and the arms above all do.
+
+* 8. Cross-References
+- Landed seam: =ui/pkg/desktop_kit/lib/src/editor/editor_backend.dart= at =cb9310f=
+- Preserved alternative: branch =arm/go-seam= at =ab481bc=
+- Paired implementer: textloom =arm/dart-seam= (=lib/go_elisp_backend.dart=)
+- Out-of-process runtime: textloom =feat/elisp-runtime=
+- Existing elisp surface in the kit: =ui/pkg/desktop_kit/lib/desktop_kit_elisp_eval.dart=
+
+* 9. Glossary
+- seam :: an interface installed into =EmacsBuffer= letting some intents be
+  executed by something other than the kit's own Dart implementation.
+- intent :: one editor command id (=forward-char=, =kill-line=, …) as
+  dispatched by =EmacsBuffer=.
+- arm :: one branch of the six-way textloom experiment, named
+  =<buffer-owner>-<integration-strategy>=.
+- buffer ownership :: which side holds the authoritative text and point.
+- mirrored state :: the backend keeps its own copy, kept current by
+  incremental notifications (=syncEdit=).
+- per-request state :: the buffer sends what one command needs, each time
+  (=EditorBackendRequest=).

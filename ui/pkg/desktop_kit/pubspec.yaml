@@ -1,0 +1,39 @@
+name: desktop_kit
+description: >-
+  Shared Flutter desktop UI components for desktop apps: WCAG-guarded
+  theming + fonts, settings persistence, clipboard (CLIPBOARD + PRIMARY
+  selection), foldable/file-reference widgets, About/version, and the Emacs/CUA
+  keymap engine. Carries no state-management dependency, so apps on Riverpod 2,
+  Riverpod 3, or the provider package can all consume it.
+version: 0.2.7
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.3.0 <4.0.0'
+  flutter: '>=3.16.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # HCT (Hue-Chroma-Tone) colour science for the theming engine's hue-preserving
+  # contrast retone (see lib/src/theme/hct_tools.dart). Flutter itself depends on
+  # this package transitively, so `any` tracks whatever the SDK pins (0.13.0 on
+  # Flutter 3.44) and never conflicts. It carries NO state-management surface, so
+  # `make deps-guard` (which forbids only riverpod/provider/flex_color_scheme/
+  # package_info_plus) is unaffected.
+  material_color_utilities: any
+  # Annotations only (@visibleForTesting on the host-env test seam). Pulled in
+  # transitively by flutter already; named explicitly because src/host/ imports
+  # it directly.
+  meta: any
+  # No web implementation (its plugin platform map lists only android/ios/
+  # linux/macos/windows), which is why settings persistence goes through the
+  # conditional SettingsBackend seam rather than calling path_provider directly.
+  path_provider: '>=2.1.0 <3.0.0'
+  # Used ONLY by src/settings/settings_backend_web.dart, which is reached via
+  # conditional import on web targets. Desktop builds never compile it.
+  web: '>=1.1.0 <2.0.0'
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

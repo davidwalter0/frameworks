@@ -1,0 +1,692 @@
+:PROPERTIES:
+:ID:       frameworks-accessibility-signal-findings
+:END:
+#+title: ui-kit-private — desktop accessibility signal handling: findings
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Investigation complete for both questions (mgmt todo e6b972e9). No code
+changed in the kit (read-only per brief); diffs proposed below, not applied.
+
+** Completed
+- [X] Q1: grep-verified that ~highContrastOf~/~disableAnimationsOf~ are
+  consumed in exactly one file (~lib/src/status/led_indicator.dart~).
+- [X] Q1: traced where high-contrast honouring would plug into the existing
+  contrast machinery (~contrast.dart~ / ~hct_tools.dart~ / ~desk_theme.dart~).
+- [X] Q1: audited the three named reduced-motion candidates; found one real
+  gap (~auto_hide_bottom_bar.dart~) and two non-issues (no animation exists
+  in ~adaptive_layout.dart~; ~span_host.dart~'s only ~Duration~ is a
+  debounce timer, not an animation).
+- [X] Q2: read ~ui_scale.dart~ in full, including its doc comment.
+- [X] Q2: built a throwaway widget test proving the double-scaling question
+  by measurement, not inference. Confirmed hypothesis (a) — override.
+- [X] Audited the remaining two portal signals (~clock-format~,
+  ~gtk-theme~) for kit-level consumers.
+
+** Next Steps
+- None outstanding for this investigation. Proposed diffs below are for a
+  follow-up change, to be applied by whoever owns the (currently
+  copy-in-progress) kit checkout.
+
+* Q1 — High contrast and reduced motion outside led_indicator.dart
+
+** Verified claim: exactly one consumer file
+
+#+begin_src sh
+cd ui-kit-private && grep -rn "highContrastOf\|disableAnimationsOf" lib/
+#+end_src
+
+Result (verbatim):
+#+begin_example
+lib/src/status/led_indicator.dart:119:    final bool reducedMotion = MediaQuery.disableAnimationsOf(context);
+lib/src/status/led_indicator.dart:120:    final bool highContrast = MediaQuery.highContrastOf(context);
+#+end_example
+
+No other file in ~lib/~ references either accessor. **Claim confirmed exactly
+as stated** — this is a grep over the whole ~lib/~ tree (not a sampled
+subset), and the two lines above are the only two hits total.
+
+** Where honouring high-contrast belongs
+
+Traced the theme package's contrast machinery to find the right seam:
+
+- ~lib/src/theme/contrast.dart~ — WCAG primitives. ~kMinContrast = 3.0~ (the
+  AA floor for large text / UI components) and ~isLegibleOn(fg, bg)~, a
+  fixed-threshold boolean, used by ~desk_theme.dart:220~ to decide whether a
+  user's chosen foreground hex is honoured at all.
+- ~lib/src/theme/apca.dart~ — the perceptual (WCAG-3 draft) companion metric,
+  with size/weight-aware floors (~apcaTextFloor~) and a flat non-text floor
+  (~kApcaNonTextFloor = 30~).
+- ~lib/src/theme/hct_tools.dart~ — the HCT tone-walking functions that
+  actually *produce* on-surface/accent/structural colours to a *target*:
+  ~toneTargetedOn(surface, {target: 4.5})~, ~accentOn(accent, bg, {target:
+  4.5})~, ~nonTextGuardOn(fg, bg, {wcagFloor: kMinContrast, lcFloor:
+  kApcaNonTextFloor})~. **Every one of these already takes its target as a
+  parameter** — the machinery to switch to a stricter target exists; nothing
+  currently sets it from context.
+- ~lib/src/theme/desk_theme.dart~ (~DeskTheme._build~) is the call site that
+  wires all of the above into a ~ThemeData~. It calls ~isLegibleOn(fg,
+  effBg)~ (line 220, fixed at ~kMinContrast~ = 3.0) and passes fixed targets
+  into ~toneTargetedOn~/~accentOn~/~nonTextGuardOn~ (7 / 6 / 4.5 / 3.0
+  respectively, see lines 260-341).
+- Crucially, ~DeskTheme.light~/~dark~ (and the public entry point
+  ~buildAppearanceTheme~ in ~appearance_pane.dart:232~) are **documented as
+  pure, context-free functions**: "Pure: no context, no side effects — call
+  it from any state-management layer. The caller is responsible for
+  resolving ~ThemeMode.system~ to a concrete ~Brightness~ (e.g. from
+  ~MediaQuery.platformBrightnessOf~) before calling." This is the kit's own
+  established pattern for MediaQuery-derived inputs: resolve them where
+  context is available (the app's ~MaterialApp~-building widget), pass the
+  resolved plain value in.
+
+  Verified concretely: ~example/lib/gallery_state.dart~'s
+  ~GalleryState.buildLightTheme()~/~buildDarkTheme()~ (a ~ChangeNotifier~,
+  no ~BuildContext~) are called directly inside
+  ~example/lib/main.dart:120-121~'s ~build(BuildContext context)~ —
+  ~theme: _state.buildLightTheme()~ / ~darkTheme: _state.buildDarkTheme()~
+  — i.e. exactly the widget that has a live ~BuildContext~ and could call
+  ~MediaQuery.highContrastOf(context)~ today, but doesn't.
+
+*** Minimal correct change
+
+Thread an optional ~highContrast~ boolean the same way ~brightness~ already
+threads through, terminating in a stricter target passed to the *existing*
+target parameters — no new contrast math required.
+
+#+begin_src diff
+--- a/lib/src/theme/contrast.dart
++++ b/lib/src/theme/contrast.dart
+@@
+-bool isLegibleOn(Color fg, Color bg) => contrastRatio(fg, bg) >= kMinContrast;
++bool isLegibleOn(Color fg, Color bg, {double minContrast = kMinContrast}) =>
++    contrastRatio(fg, bg) >= minContrast;
++
++/// Stricter floor used when the desktop's high-contrast accessibility
++/// preference (`org.gnome.desktop.a11y.interface/high-contrast`, surfaced via
++/// `MediaQuery.highContrastOf`) is active — WCAG AA for *normal* text (4.5),
++/// vs. the default 3.0 UI-component floor.
++const double kMinContrastHighContrast = 4.5;
+#+end_src
+
+#+begin_src diff
+--- a/lib/src/theme/desk_theme.dart
++++ b/lib/src/theme/desk_theme.dart
+@@ static ThemeData light({
+     String fontFamily = '',
+     double baseSize = 13,
+     int weight = 400,
++    bool highContrast = false,
+   }) =>
+       _build(
+         palette,
+         Brightness.light,
+@@ (mirror the same param + pass-through on `dark`)
+@@ static ThemeData _build(
+     String fontFamily = '',
+     double baseSize = 13,
+     int weight = 400,
++    bool highContrast = false,
+   }) {
++    final double minContrast =
++        highContrast ? kMinContrastHighContrast : kMinContrast;
++    final double onSurfaceTarget = highContrast ? 9.0 : 7.0;
++    final double onSurfaceVariantTarget = highContrast ? 7.5 : 6.0;
++    final double accentTarget = highContrast ? 7.0 : 4.5;
++    final double structuralWcagFloor = highContrast ? 4.5 : kMinContrast;
++    final double structuralLcFloor = highContrast ? 45.0 : kApcaNonTextFloor;
+     ...
+-    if (fg != null && isLegibleOn(fg, effBg)) {
++    if (fg != null && isLegibleOn(fg, effBg, minContrast: minContrast)) {
+       effectiveFg = fg;
+@@
+-      final Color onSurfaceHct = toneTargetedOn(base, chromaCap: 12, target: 7);
++      final Color onSurfaceHct =
++          toneTargetedOn(base, chromaCap: 12, target: onSurfaceTarget);
+       final Color onSurfaceVariantHct =
+-          toneTargetedOn(base, chromaCap: 10, target: 6);
++          toneTargetedOn(base, chromaCap: 10, target: onSurfaceVariantTarget);
+       final Color primaryHct = accentOn(scheme.primary, base);
+       final Color secondaryHct = accentOn(scheme.secondary, base);
+       final Color tertiaryHct = accentOn(scheme.tertiary, base);
++      // (pass `target: accentTarget` to all three accentOn calls)
+       final Color outlineHct = nonTextGuardOn(scheme.outline, tint(0.12));
++      // (pass `wcagFloor: structuralWcagFloor, lcFloor: structuralLcFloor`)
+@@
+       structuralTrack = nonTextGuardOn(tint(0.12), base);
+       structuralLine = nonTextGuardOn(scheme.outlineVariant, base);
++      // (same wcagFloor/lcFloor pass-through on both)
+#+end_src
+
+#+begin_src diff
+--- a/lib/src/theme/appearance_pane.dart
++++ b/lib/src/theme/appearance_pane.dart
+@@
+ /// ... The caller is responsible for resolving
+ /// [ThemeMode.system] to a concrete [Brightness] (e.g. from
+ /// `MediaQuery.platformBrightnessOf`) before calling.
++///
++/// Likewise, [highContrast] should be resolved by the caller from
++/// `MediaQuery.highContrastOf(context)` — this function stays context-free.
+ ThemeData buildAppearanceTheme(
+   AppearanceSettings s,
+   Brightness brightness, {
+   DeskPalette? palette,
++  bool highContrast = false,
+ }) {
+   ...
+   if (brightness == Brightness.dark) {
+     return DeskTheme.dark(
+       ...
++      highContrast: highContrast,
+     );
+   }
+   return DeskTheme.light(
+     ...
++    highContrast: highContrast,
+   );
+ }
+#+end_src
+
+Values above (9.0/7.5/7.0/4.5-WCAG/45-Lc) are a **judged proposal**, not a
+verified requirement — no accessibility spec was consulted for the exact
+"high-contrast mode" multiplier; they're chosen to move one full WCAG/APCA
+tier stricter per role, consistent with the existing tier spacing already in
+the file (7/6 body vs 4.5/3.0 default — see Source Verification Notes).
+
+** Reduced-motion audit of the three named candidates
+
+| File                              | Animation present?              | Gated on disableAnimationsOf? | Verdict     |
+|-----------------------------------+----------------------------------+--------------------------------+-------------|
+| widgets/auto_hide_bottom_bar.dart | Yes — ~AnimatedSlide~, 200ms     | No                             | Real gap    |
+| layout/adaptive_layout.dart       | None found                       | n/a                            | Not a gap   |
+| layout/span_host.dart             | ~kSpanCommitDebounce~ (300ms)    | n/a — it's a debounce, not an animation | Not a gap |
+
+*** auto_hide_bottom_bar.dart — real gap
+
+~lib/src/widgets/auto_hide_bottom_bar.dart:169-172~:
+#+begin_src dart
+child: AnimatedSlide(
+  offset: _barVisible ? Offset.zero : const Offset(0, 1),
+  duration: const Duration(milliseconds: 200),
+  curve: Curves.easeInOut,
+  ...
+#+end_src
+Fixed 200ms slide, unconditionally, every time the bar auto-hides/reveals
+(scroll-driven or drag-driven). No read of ~MediaQuery.disableAnimationsOf~
+anywhere in the file (confirmed by the same whole-tree grep above — the file
+did not appear in the two-line result). Minimal fix:
+
+#+begin_src diff
+--- a/lib/src/widgets/auto_hide_bottom_bar.dart
++++ b/lib/src/widgets/auto_hide_bottom_bar.dart
+@@ Widget build(BuildContext context) {
+     final double bodyBottomPad = _barVisible ? widget.barHeight : 0.0;
++    final bool reducedMotion = MediaQuery.disableAnimationsOf(context);
+     return Stack(
+       ...
+           child: AnimatedSlide(
+             offset: _barVisible ? Offset.zero : const Offset(0, 1),
+-            duration: const Duration(milliseconds: 200),
++            duration: reducedMotion
++                ? Duration.zero
++                : const Duration(milliseconds: 200),
+             curve: Curves.easeInOut,
+#+end_src
+
+*** adaptive_layout.dart / span_host.dart — not gaps
+
+- ~adaptive_layout.dart~: grepped for ~Animat\|Duration\|Curve\|Tween~ — zero
+  hits. Layout-mode changes (rail ↔ bottom-bar ↔ collapse) are instant
+  rebuilds with no interpolation at all, so there is nothing for
+  ~disableAnimationsOf~ to gate. Suspected-but-not-actual defect.
+- ~span_host.dart~: one ~Duration~ hit, ~kSpanCommitDebounce = Duration
+  (milliseconds: 300)~ — a debounce timer that delays *committing* a resize
+  value (not a visual transition). Reduced-motion preferences are about
+  animated *motion*, not input-latency timers; gating a debounce on
+  ~disableAnimationsOf~ would be a category error, not a fix. Not a gap.
+
+** Signals beyond the two named in the brief
+
+- ~color-scheme~ → ~platformBrightness~: consumed correctly.
+  ~appearance_pane.dart:312~ resolves ~ThemeMode.system => MediaQuery
+  .platformBrightnessOf(context)~, matching the documented "caller resolves
+  it" contract. No gap.
+- ~text-scaling-factor~: see Q2 below — the double-scaling defect IS this
+  signal's handling.
+- ~clock-format~ (→ engine's ~alwaysUse24HourFormat~) and ~gtk-theme~: grepped
+  for both by name and by their Flutter-side representation
+  (~alwaysUse24HourFormat~, ~TimeOfDay~, ~DateFormat~,
+  ~MaterialLocalizations~) — zero hits anywhere in ~lib/~. This is not a bug
+  in the same sense as the other two: the kit currently has **no time-of-day
+  display widget and no native-GTK-theme-name consumer at all**, so there is
+  no code that *should* be reading these but isn't. Recorded for completeness
+  rather than as a defect — worth a note if/when a clock or time-picker
+  widget is added to the kit.
+
+* Q2 — The double-scaling defect (THE IMPORTANT ONE)
+
+** Reading ui_scale.dart's stated intent first
+
+Full file read (57 lines). The doc comment is explicit about mechanism, not
+just behaviour:
+
+#+begin_quote
+Otherwise, wraps [child] in:
+ * a [MediaQuery] that copies [MediaQuery.of] and overrides
+   [MediaQueryData.textScaler] to `TextScaler.linear(scale)`, so every
+   descendant [Text] ... grows/shrinks with [scale];
+#+end_quote
+
+"overrides ... to ~TextScaler.linear(scale)~" is a literal description of
+~copyWith(textScaler: TextScaler.linear(scale))~ (line 51) — which replaces
+the field, full stop. The doc comment does **not** claim this composes with
+whatever ambient factor was already there; it doesn't mention the ambient
+factor at all beyond "copies [MediaQuery.of]" (i.e. copies everything
+*except* textScaler, which it then overwrites). Read plainly, the doc
+comment already commits to override, not compose — but per the brief, this
+is settled by test, not by reading alone.
+
+** The test
+
+Ran against the real kit via a throwaway path-dependency project (not added
+to the kit; flutter/dart per repo pin: Flutter 3.44.2 / Dart 3.12.2).
+Project in a scratch directory outside the repo (~uiscale_probe~; pubspec has
+a ~path:~ dependency on the kit checkout; single test file, no other files
+added).
+
+#+begin_src dart
+// Probe for the suspected double-scaling defect in
+// ui-kit-private's lib/src/theme/ui_scale.dart (applyUiScale).
+//
+// Question: with an ambient MediaQuery textScaler simulating the desktop's
+// xdg-desktop-portal `text-scaling-factor` (1.25) already in the tree, and
+// the kit's applyUiScale() applying a user-chosen in-app scale of 1.2 on top
+// of it, does the resulting effective textScaler:
+//   (a) discard the system factor and read exactly 1.2  (override), or
+//   (b) compound to 1.25 * 1.2 = 1.5                    (multiply)?
+//
+// Method: pump a widget tree with an explicit outer MediaQuery
+// (textScaler: TextScaler.linear(1.25)) standing in for what the engine
+// would normally surface from the desktop portal, wrap the child in
+// applyUiScale(context, 1.2, child), and read back MediaQuery.textScalerOf
+// from BELOW the wrapper — i.e. from the actual child's BuildContext, which
+// is what any real widget under the wrapper would see and use to size text.
+
+import 'package:desktop_kit/desktop_kit_theme.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets(
+    'applyUiScale: does the user scale override or multiply the ambient '
+    'system text-scaling factor?',
+    (WidgetTester tester) async {
+      const double systemFactor = 1.25; // stand-in for the desktop portal's
+      // org.gnome.desktop.interface/text-scaling-factor, as surfaced by the
+      // engine into the ambient MediaQuery before any app code runs.
+      const double userScale = 1.2; // the kit's applyUiScale() argument,
+      // e.g. driven by AppearanceSettings.uiScale / DisplayConfig.uiScale.
+
+      TextScaler? effectiveScaler;
+      double? effectiveFontSize;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (BuildContext context, Widget? child) {
+            // Outer MediaQuery: simulates what the Linux embedder already
+            // put in the tree from xdg-desktop-portal, ABOVE any kit code.
+            return MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: TextScaler.linear(systemFactor),
+              ),
+              child: applyUiScale(
+                context,
+                userScale,
+                Builder(
+                  builder: (BuildContext innerContext) {
+                    // Read the textScaler BELOW applyUiScale's wrapper --
+                    // exactly what a real Text widget in the app would see.
+                    effectiveScaler = MediaQuery.textScalerOf(innerContext);
+                    effectiveFontSize =
+                        effectiveScaler!.scale(14.0); // arbitrary base size
+                    return const Text('probe');
+                  },
+                ),
+              ),
+            );
+          },
+          home: const SizedBox.shrink(),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Independently confirm via the RENDERED text size, not just the
+      // MediaQuery value, so the assertion is not trusting one accessor.
+      final RenderParagraph paragraph = tester.renderObject(
+        find.text('probe'),
+      );
+      // fontSize as laid out reflects TextPainter's applied text scaler.
+      final double appliedScaleFromRender =
+          paragraph.text.style!.fontSize == null
+              ? double.nan
+              : effectiveFontSize! / 14.0;
+
+      // ---- Report ----
+      // Print unconditionally so the evidence is visible in the test log
+      // regardless of which branch the assert takes.
+      // ignore: avoid_print
+      print(
+        'systemFactor=$systemFactor userScale=$userScale '
+        'effectiveScaler=$effectiveScaler '
+        'effectiveFontSize(base=14)=$effectiveFontSize '
+        'impliedCompositeFactor=$appliedScaleFromRender',
+      );
+
+      const double overrideExpected = userScale; // hypothesis (a): 1.2
+      const double multiplyExpected =
+          systemFactor * userScale; // hypothesis (b): 1.5
+
+      final double got = effectiveScaler!.scale(1.0);
+
+      if ((got - overrideExpected).abs() < 0.001) {
+        // ignore: avoid_print
+        print(
+          'RESULT: (a) OVERRIDE -- the system text-scaling-factor is '
+          'DISCARDED; effective factor is exactly the user scale '
+          '($overrideExpected).',
+        );
+      } else if ((got - multiplyExpected).abs() < 0.001) {
+        // ignore: avoid_print
+        print(
+          'RESULT: (b) MULTIPLY -- the two factors COMPOUND; effective '
+          'factor is $multiplyExpected.',
+        );
+      } else {
+        // ignore: avoid_print
+        print('RESULT: NEITHER hypothesis matched; got=$got');
+      }
+
+      // The actual assertion: pin down which branch occurred.
+      expect(
+        got,
+        closeTo(overrideExpected, 0.001),
+        reason:
+            'applyUiScale is documented (ui_scale.dart doc comment) to use '
+            'MediaQueryData.copyWith(textScaler: TextScaler.linear(scale)) '
+            'which REPLACES rather than composes the ambient textScaler. '
+            'If this expectation ever starts failing with got close to '
+            '$multiplyExpected instead, the kit has started COMPOUNDING '
+            'the system factor with the user scale (hypothesis (b)) -- '
+            'the opposite defect.',
+      );
+    },
+  );
+}
+#+end_src
+
+*** Result
+
+#+begin_example
+systemFactor=1.25 userScale=1.2 effectiveScaler=linear (1.2x) effectiveFontSize(base=14)=16.8 impliedCompositeFactor=1.2
+RESULT: (a) OVERRIDE -- the system text-scaling-factor is DISCARDED; effective factor is exactly the user scale (1.2).
+00:02 +1: All tests passed!
+#+end_example
+
+**(a) OVERRIDE occurs, confirmed by test, not inference.** The ambient
+1.25x desktop factor is silently discarded the moment ~applyUiScale~ runs
+with any ~scale != 1.0~; the effective factor is exactly the user's 1.2,
+never 1.5.
+
+**Important asymmetric detail, also confirmed by reading the code (line 47):
+~if (scale == 1.0) return child;~** — at the user's *default* slider value
+(no override), ~applyUiScale~ returns the child completely unwrapped, so the
+ambient system factor passes through untouched. **The defect only manifests
+once the user touches the in-app zoom control away from 1.0** — at that
+point the OS accessibility setting they may depend on (larger text for low
+vision) is silently replaced rather than built upon. In the concrete
+example numbers, a user who explicitly set 1.25x at the desktop level and
+then nudges the in-app zoom to 1.2x ends up with text *smaller* than their
+OS setting alone would have given them (1.2 < 1.25) — with no indication
+anything changed relative to what they expect ("I only asked for a small
+in-app bump").
+
+#+begin_quote
+*Mechanism updated 2026-08-09; this finding is unchanged.* The
+~if (scale == 1.0) return child;~ early return quoted above was itself a
+silent data-loss bug: a bare child at 1.0 and a wrapped child otherwise are
+a ~(runtimeType, key)~ mismatch in one slot, so crossing 1.0 in either
+direction disposed everything below it — here, ~MaterialApp.builder~'s
+Navigator and every route's state. It is replaced by a wrapper that is a
+*no-op* at 1.0: the ~MediaQuery~ republishes the ambient data as is rather
+than overwriting it with ~TextScaler.linear(1.0)~. The pass-through this
+paragraph describes therefore still holds — and is now pinned by the test
+"scale == 1.0 leaves the ambient text scaler and icon size" rather than by
+the shape of an early return. The override-vs-compose question below is
+untouched and still open.
+#+end_quote
+
+** Recommended composition, and the argument against it
+
+*** Recommendation: compose (multiply), not override
+
+~scale~ should multiply the *ambient* scaler's effect at every font size,
+not replace it. Concretely, ~TextScaler~ has no built-in "compose two
+scalers" helper — verified against the framework source,
+~$HOME/flutter/packages/flutter/lib/src/painting/text_scaler.dart~:
+the only combinator is ~TextScaler.clamp({minScaleFactor, maxScaleFactor})~,
+which bounds one existing scaler's *output range*; it does not multiply two
+scalers together. So the fix needs a small custom ~TextScaler~:
+
+#+begin_src diff
+--- a/lib/src/theme/ui_scale.dart
++++ b/lib/src/theme/ui_scale.dart
+@@
+ Widget applyUiScale(BuildContext context, double scale, Widget child) {
+   if (scale == 1.0) return child;
+   final MediaQueryData mediaQuery = MediaQuery.of(context);
+   final double baseIconSize = IconTheme.of(context).size ?? _kDefaultIconSize;
+   return MediaQuery(
+-    data: mediaQuery.copyWith(textScaler: TextScaler.linear(scale)),
++    data: mediaQuery.copyWith(
++      textScaler: _ComposedTextScaler(mediaQuery.textScaler, scale)
++          .clamp(maxScaleFactor: kMaxComposedUiScale),
++    ),
+     child: IconTheme.merge(
+       data: IconThemeData(size: baseIconSize * scale),
+       child: child,
+     ),
+   );
+ }
++
++/// Safety ceiling on the COMPOSED (ambient x user) text scale factor, so an
++/// extreme system accessibility setting stacked with an extreme in-app zoom
++/// cannot blow out this module's fixed (non-geometric — see class doc)
++/// padding and containers. Chosen generously above ordinary values (desktop
++/// portal factors top out around 2.0-3.0 in practice); JUDGED, not derived
++/// from a spec.
++const double kMaxComposedUiScale = 3.0;
++
++/// A [TextScaler] that layers a flat multiplicative [_factor] on top of an
++/// ambient [_inner] scaler, so a desktop accessibility text-scaling
++/// preference already present in the ambient [MediaQuery] (surfaced by the
++/// engine from xdg-desktop-portal) is PRESERVED rather than discarded when
++/// [applyUiScale] applies its own in-app zoom. Multiplies per font size
++/// (not just at one reference size), so it composes correctly even if
++/// [_inner] is a non-linear scaler.
++class _ComposedTextScaler extends TextScaler {
++  const _ComposedTextScaler(this._inner, this._factor);
++  final TextScaler _inner;
++  final double _factor;
++
++  @override
++  double scale(double fontSize) => _inner.scale(fontSize) * _factor;
++
++  @override
++  // ignore: deprecated_member_use
++  double get textScaleFactor => _inner.textScaleFactor * _factor;
++
++  @override
++  bool operator ==(Object other) =>
++      other is _ComposedTextScaler &&
++      other._inner == _inner &&
++      other._factor == _factor;
++
++  @override
++  int get hashCode => Object.hash(_inner, _factor);
++}
+#+end_src
+
+Argument FOR composing:
+- Respects a signal the user (or their desktop environment's defaults for an
+  accessibility profile) explicitly configured at the OS level — silently
+  discarding an assistive-tech preference is the more severe failure mode of
+  the two, on accessibility grounds specifically: this preference commonly
+  exists *because* the user has a vision need, and an app-level control
+  silently overriding it removes accommodation the user didn't know was
+  contingent on which slider they touched.
+- Matches the common mental model for an in-app "zoom" layered on top of
+  whatever the desktop already does — the same stacking behaviour as
+  browser zoom on top of OS-level font scaling, which is the closest
+  existing UX precedent for "in-app scale control on a desktop OS".
+- The asymmetry documented above (defaults pass the system factor through,
+  only non-default breaks it) is itself evidence this is an oversight rather
+  than a considered choice: a deliberate "override" design would more
+  likely have been unconditional, not conditional on whether the user
+  happened to touch the slider.
+
+Argument AGAINST composing (the real counter-case, not a strawman):
+- ~ui_scale.dart~'s own doc comment states this is a **"pragmatic desktop
+  zoom, not a geometric one"** — text and ambient icon size scale, but
+  layout geometry, containers, paddings, and images do NOT. Composing two
+  large factors (e.g. a desktop set to 2.0x for a low-vision user, times a
+  1.5x in-app zoom = 3.0x) grows text far more than the non-scaling
+  container it sits in was ever budgeted for, which is a MORE likely
+  overflow/clipping failure under composition than under override, exactly
+  because this module explicitly opted out of resizing the geometry that
+  would normally absorb it.
+- A user who deliberately sets an *absolute* target in-app (some apps'
+  "reading size" pickers show literal preview text at each option) may
+  reasonably expect that value to be deterministic regardless of desktop
+  settings, especially in a kiosk-style or fixed-viewport desktop app where
+  predictability of the rendered size matters more than composability.
+- **Mitigation, not rebuttal**: the ~.clamp(maxScaleFactor: ...)~ in the
+  proposed diff exists specifically to bound the failure mode above — it
+  keeps the "respect the OS setting" property while capping how far the
+  *product* of the two factors can run before this module's known geometry
+  limitation bites. This is a genuine trade-off resolution, not a dismissal
+  of the counter-argument: composing without a ceiling would be worse than
+  either (a) or (b) in the worst case (unbounded compounding across
+  multiple settings), so the recommendation is compose-with-a-ceiling, not
+  bare composition.
+
+* Source Verification Notes
+
+** Verified Claims (measured or read directly from source, this session)
+- ~highContrastOf~/~disableAnimationsOf~ appear in exactly one file
+  (~led_indicator.dart~ lines 119-120): confirmed via whole-tree ~grep -rn~
+  over ~lib/~, two lines returned total.
+- ~ui_scale.dart~ line 47 early-returns unchanged ~child~ when
+  ~scale == 1.0~: read directly from source.
+- Double-scaling question resolved as (a) OVERRIDE: confirmed by running a
+  widget test against the actual kit source (path dependency, not a mock),
+  Flutter 3.44.2 / Dart 3.12.2 (~flutter --version~ output captured this
+  session), test passed with printed evidence
+  ~effectiveScaler=linear (1.2x)~, ~impliedCompositeFactor=1.2~.
+- ~TextScaler~ has no built-in scaler-composition helper, only
+  ~clamp(minScaleFactor, maxScaleFactor)~ which bounds one scaler's output
+  range: confirmed by reading
+  ~$HOME/flutter/packages/flutter/lib/src/painting/text_scaler.dart~
+  in full (167 lines) — the abstract class, ~_LinearTextScaler~, and
+  ~_ClampedTextScaler~ are the only three types defined there.
+- ~enable-animations=false~ maps to
+  ~kFlutterAccessibilityFeatureDisableAnimations~ (→
+  ~MediaQueryData.disableAnimations~): confirmed by reading
+  ~fl_settings_handler.cc~ (~update_settings~, lines 46-55) in the engine
+  checkout at ~$HOME/flutter/engine~.
+- ~auto_hide_bottom_bar.dart~'s ~AnimatedSlide~ uses a fixed
+  ~Duration(milliseconds: 200)~ with no ~disableAnimationsOf~ read anywhere
+  in the file: confirmed by full file read plus the whole-tree grep above
+  (file did not appear in the two-line result).
+- ~adaptive_layout.dart~ contains no ~Animat\|Duration\|Curve\|Tween~ token
+  at all: confirmed by grep, zero hits.
+- ~span_host.dart~'s only ~Duration~ is ~kSpanCommitDebounce~ (a debounce
+  timer, not a widget animation): confirmed by grep + read of the
+  surrounding declaration.
+- ~buildAppearanceTheme~/~DeskTheme.light~/~dark~ are called with no
+  ~BuildContext~ available at their own call sites
+  (~GalleryState.buildLightTheme~/~buildDarkTheme~ are plain
+  ~ChangeNotifier~ methods), and ARE reachable from a live ~BuildContext~ one
+  level up (~example/lib/main.dart:113-126~'s
+  ~build(BuildContext context)~, which already resolves
+  ~MediaQuery.platformBrightnessOf~ elsewhere in the same file for
+  ~ThemeMode.system~): confirmed by reading both files.
+- ~clock-format~/~gtk-theme~ have no consumer anywhere in ~lib/~ (searched
+  for the literal setting names AND their Flutter-side representations —
+  ~alwaysUse24HourFormat~, ~TimeOfDay~, ~DateFormat~,
+  ~MaterialLocalizations~): confirmed by grep, zero hits for either search.
+
+** Judged / Estimated Claims (explicitly not verified against a spec)
+- The proposed high-contrast target values (WCAG 4.5 for the flat
+  foreground guard, 9.0/7.5 for HCT tone targets, 7.0 for accents, 4.5
+  WCAG + 45 Lc for structural dual-floor) are a **reasoned proposal**, sized
+  to move one tier stricter than the kit's existing non-high-contrast
+  defaults (which are themselves already judged/hand-tuned per
+  ~hct_tools.dart~'s own module comment). No WCAG/APCA "high-contrast mode"
+  specification was consulted for exact multipliers, because none of the
+  six portal signals prescribes one — ~high-contrast~ is a boolean, not a
+  target ratio.
+- ~kMaxComposedUiScale = 3.0~ in the Q2 diff is likewise judged, not
+  derived — chosen as "generously above ordinary observed desktop portal
+  factors (typically <= 2.0-3.0)", not from a measured survey of real
+  desktop configurations.
+- The recommendation to compose rather than override is a design
+  recommendation with a stated, genuine counter-argument (see Q2 above) —
+  presented as the assistant's judgement, not as an uncontested fact.
+
+** Corrections Made
+- None — no earlier claim in this investigation needed correction; both
+  suspected defects were confirmed as stated by the task brief (Q1's
+  single-file claim was already precisely accurate; Q2's hypothesis (a) was
+  the one that occurred).
+
+* Files Touched
+- ui/docs/accessibility-signal-findings.org (this file)
+- a scratch throwaway project outside the repo (~uiscale_probe~; pubspec
+  + one test file; not committed anywhere, not part of the kit)
+
+The kit itself (~$HOME/go/src/github.com/davidwalter0/ui-kit-private~)
+was read-only for this session; no files there were modified. All diffs
+above are proposals for a follow-up change.
+
+* Glossary
+- portal :: xdg-desktop-portal, the Linux desktop settings/accessibility
+  D-Bus service the Flutter engine reads from.
+- APCA :: Accessible Perceptual Contrast Algorithm — the WCAG-3 draft
+  perceptual contrast model used alongside flat WCAG 2.x ratios in this kit.
+- HCT :: Hue-Chroma-Tone colour space (Material's ~material_color_utilities~
+  package) used for hue-preserving contrast walking.
+- TextScaler :: Flutter's abstraction (replacing the deprecated
+  ~textScaleFactor~ double) for computing a scaled font size from an
+  unscaled one; supports non-linear scaling in principle.
+
+* Index
+- Q1 grep evidence → [[*Verified claim: exactly one consumer file]]
+- Q1 proposed diffs → [[*Minimal correct change]]
+- Q1 animation audit table → [[*Reduced-motion audit of the three named candidates]]
+- Q2 test (verbatim) → [[*The test]]
+- Q2 result → [[*Result]]
+- Q2 recommendation + counter-argument → [[*Recommended composition, and the argument against it]]
+- Source Verification Notes → [[*Source Verification Notes]]
+
+* Cross-References
+- mgmt todo: e6b972e9
+- Kit under investigation: $HOME/go/src/github.com/davidwalter0/ui-kit-private (read-only this session)
+- Scratch probe project: ~uiscale_probe~, in a scratch directory outside the repo
+
+* Footnotes

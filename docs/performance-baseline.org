@@ -1,0 +1,669 @@
+:PROPERTIES:
+:ID:       frameworks-performance-baseline
+:END:
+#+title: Measured performance baseline — Flutter/Go family
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Baseline established by measurement. Five candidate targets investigated; two
+yielded actionable wins backed by numbers, three are documented NEGATIVE results
+and should not be optimized. Nothing was optimized in this pass, by design.
+
+** Completed
+- [X] Go =make check= per-target and end-to-end, warm and cold (private caches)
+- [X] Installer extraction decomposed into codec / tar / disk layers on REAL payloads
+- [X] Codec-swap ceiling quantified (stdlib vs klauspost vs pgzip)
+- [X] Flutter per-invocation startup floor, batch-vs-per-file ratio, concurrency/RSS model
+- [X] =ref.watch= scoping census, classified by enclosing context, grep-validated
+- [X] =dart analyze= cost vs file size, with cache state equalized
+- [X] 48-file =flutter test= deadlock diagnosed (zero-CPU evidence), reproduced
+  *4/4*; load and concurrency both ELIMINATED as causes
+
+** Next Steps
+- [ ] Bisect the deadlock threshold between 24 and 48 files, to set the §2.1
+  chunk cap on evidence rather than on the largest size known to work (§5.6)
+- [ ] Pin the gate's =flutter test --concurrency= using the RSS model in §2.2
+- [ ] Instrument a scratch app copy if a real rebuild-count number is wanted (§5.3)
+
+* 0. Measurement conditions — read before trusting any absolute
+
+*The machine was under heavy concurrent load throughout.* Seven sibling agents,
+the parent session and the user shared one host for the whole session. This is
+*the dominant confound for every timing below* and it is handled explicitly:
+
+- =load1= is recorded beside every timing sample. Observed range 1.09 - 23.83.
+- Every timing is reported as *min / median / max over N repetitions*, never as a
+  single number. Where a range is wide, that width IS the finding about
+  confidence, and is not smoothed away.
+- *Ratios and counts are preferred over absolutes*, because a ratio taken from
+  interleaved runs under one load survives that load while an absolute does not.
+- Peak-RSS figures are *load-independent* (a memory footprint does not shrink
+  under CPU contention), so the RSS models are the most robust numbers here.
+- Where a number is a single noisy sample it is *labelled as such*.
+
+| Item | Value |
+|------+-------|
+| Host CPU | 12th Gen Intel Core i7-1270P, 12 cores / 16 threads |
+| RAM | 31,801 MB total; 11.0 - 13.8 GB available during the session |
+| Swap | 65,535 MB total, ~9.5 GB already in use before measuring |
+| Go | go1.26.5 linux/amd64, =GOTOOLCHAIN=local= (via =go-version path=) |
+| Flutter / Dart | Flutter 3.44.2 stable / Dart 3.12.2 |
+| Date | 2026-07-29 |
+
+*Isolation.* No repository outside the owned doc was written. The Go module and
+the Flutter kit were *copied into scratch* before any build or test ran — for the
+kit this was required for correctness, not merely permission: a second
+=flutter test= in the same package directory shares =.dart_tool= and would have
+corrupted the sibling agent's concurrent build cache. Cold-cache Go figures used
+a *private* =GOCACHE= / =GOLANGCI_LINT_CACHE= per repetition; the shared
+=GOCACHE=, =GOMODCACHE=, pub cache and =~/.dartServer= were never cleared.
+
+* 1. Baseline table — everything measured, in one place
+
+All wall-clock in seconds. =reps= is repetitions; =load1= is the 1-minute load
+average at sample time.
+
+** 1.1 Go check suite — =frameworks/go= (10 =.go= files, 1,447 LOC)
+
+WARM (shared build cache), 3 reps each:
+
+| Target | min | med | max | peak RSS (MB) | load1 |
+|-----------+-------+-------+-------+---------------+-------------|
+| fmt-check | 0.04 | 0.04 | 0.05 | 5.6 - 5.9 | 9.29 |
+| vet | 0.30 | 0.35 | 0.42 | 25 - 28 | 9.29 |
+| test | 0.32 | 0.39 | 0.40 | 26 - 27 | 9.29 |
+| lint | 1.19 | 1.49 | 1.54 | 97 - 99 | 9.29 - 10.54 |
+| vuln | 3.45 | 3.97 | 4.74 | 307 - 325 | 10.54 - 12.33 |
+| cov | 0.78 | 0.81 | 0.84 | 26 - 27 | 12.62 |
+
+COLD (fresh private caches per rep), 3 reps each:
+
+| Target | min | med | max | peak RSS (MB) |
+|-----------+-------+-------+-------+---------------|
+| fmt-check | 0.03 | 0.03 | 0.03 | ~7 |
+| vet | 12.58 | 14.98 | 17.92 | 301 - 317 |
+| test | 13.83 | 15.34 | 15.63 | 294 - 317 |
+| lint | 17.48 | 22.00 | 22.59 | 312 - 348 |
+| vuln | 2.95 | 3.43 | 4.53 | 303 - 344 |
+| cov | 16.97 | 17.62 | 19.17 | 300 - 312 |
+
+END-TO-END =make check= (the real gate; one shared cache across the chain):
+
+| Mode | min | med | max | peak RSS (MB) | reps |
+|------+-------+-------+-------+---------------+------|
+| warm | 2.25 | 3.76 | 6.51 | 348 - 375 | 3 |
+| cold | 36.69 | 38.83 | 50.06 | 328 - 354 | 3 |
+
+All six targets were verified to genuinely PASS (exit 0 with real output), not to
+fail fast — =lint= reports "0 issues", =vuln= "No vulnerabilities found",
+=cov= 73.9% TOTAL. A fast target that errored would otherwise read as a fast target.
+
+** 1.2 Installer extraction — REAL payloads, not synthetic
+
+The brief anticipated a 20-60 MB payload. Measured reality, from artifacts already
+on disk:
+
+| Artifact | compressed | uncompressed | ratio |
+|----------+------------+--------------+-------|
+| =voicelab-v0.7.3-10-gd91eeb9-linux-amd64.tar.gz= | 58,210,636 B | 135,720,960 B | 57.1% |
+| =word-bank-v0.2.0-3-g126fcc1-linux-amd64.tar.gz= | 136,018,753 B | 393,123,840 B | 65.4% |
+
+=word-bank= is *2.3x above the brief's upper bound*, so the installer path
+matters more than assumed — which is what makes the negative result below load-bearing.
+
+Layer decomposition, real 58 MB payload, =-benchtime=3x -count=3= (ns/op → s):
+
+| Layer | min | med | max | allocs/op |
+|-------+-------+-------+-------+-----------|
+| GzipFloor — codec only, to =io.Discard= | 1.145 | 1.368 | 1.582 | 139,920 |
+| TarWalkNoDisk — + tar framing | 1.144 | 1.196 | 1.635 | 140,815 |
+| ExtractTarGzFull — the shipped path, to disk | 1.167 | 1.411 | 2.226 | 141,292 |
+| ExtractTarGzBuffered — + 1 MiB =bufio.Writer= | 1.178 | 1.340 | 2.041 | 141,235 |
+
+Codec-swap ceiling (same payload, same tar walk, only the gzip impl changes):
+
+| Codec | min | med | max |
+|-------+-------+-------+-------|
+| stdlib =compress/gzip= (ships today) | 1.518 | 1.622 | 2.024 |
+| =klauspost/compress/gzip= | 1.253 | 1.399 | 2.238 |
+| =klauspost/pgzip= (parallel) | 1.220 | 1.430 | 1.663 |
+
+Single real extraction, peak RSS, 3 reps:
+
+| Payload | elapsed min/med/max | peak RSS | RSS / payload |
+|---------+---------------------+----------+---------------|
+| 55 MiB | 0.888 / 1.410 / 1.463 | 78.5 - 78.7 MB | 1.43x |
+| 129 MiB | 3.005 / 3.324 / 3.406 | 187.1 - 187.4 MB | 1.45x |
+
+Icon-cache refresh, =gtk-update-icon-cache -f -t= on a 7-size / 8-file / 620 KB
+theme, n=10: *min 7.7 ms, median 8.3 ms, max 16.9 ms*.
+
+** 1.3 Flutter test suite — =ui-kit-private= (98 test files, 18,609 lines, 1,393 declared tests)
+
+Per-invocation floor, single 8-line test file with one assertion:
+
+| rep | wall | peak group RSS | note |
+|-----+------+----------------+------|
+| 1 | 11.22 | 868.2 MB | cold compile |
+| 2 | 3.65 | 603.9 MB | warm |
+| 3 | 3.66 | 606.8 MB | warm |
+
+Batch vs per-file, representative 6-file subset (1,064 lines, mean 177 vs suite
+mean 190 = 0.93x), 79 tests:
+
+| Mode | rep1 | rep2 | rep3 | peak RSS |
+|------+-------+-------+-------+----------|
+| batch — ONE invocation of 6 files | 11.11 | 9.59 | 8.46 | 950 - 978 MB |
+| individual — SIX invocations, summed | 21.30 | 31.60 | 41.81 | 610 - 706 MB each |
+
+Ratio individual / batch: *2.52x (min/min), 3.30x (median/median), 3.76x (max/max)*.
+
+Batch scaling at default concurrency:
+
+| files | wall | peak RSS | procs | tests | load1 |
+|-------+-------+----------+-------+-------+-------|
+| 6 | 2.49 | 1,092 MB | 7 | 56 | 4.65 |
+| 6 | 12.61 | 1,168 MB | 7 | 56 | 11.55 |
+| 12 | 13.99 | 1,281 MB | 9 | 117 | 5.00 |
+| 24 | 27.39 | 1,337 MB | 9 | 249 | 7.31 |
+
+Concurrency sweep at FIXED 24 files / 249 tests (all passed):
+
+| =--concurrency= | wall | peak RSS | procs | load1 |
+|-----------------+-------+----------+-------+-------|
+| 1 | 72.27 | 736.3 MB | 3 | 13.34 |
+| 2 | 49.96 | 849.5 MB | 4 | 9.33 |
+| 4 | 36.75 | 1,048.1 MB | 6 | 11.30 |
+| 8 | 64.36 | 1,405.1 MB | 7 | 13.46 |
+
+** 1.4 =dart analyze= cost vs file size (cache state equalized per file)
+
+| File | lines | imports | min | med | max |
+|------+-------+---------+------+------+------|
+| =test/smoke_test.dart= | 8 | 2 | 0.67 | 0.67 | 0.72 |
+| =test/editor/window_tree_test.dart= | 189 | 2 | 1.57 | 1.57 | 1.92 |
+| =test/editor/emacs_buffer_test.dart= | 675 | 3 | 1.52 | 1.72 | 1.77 |
+| =lib/src/editor/emacs_buffer.dart= | 2,768 | 12 | 0.22 | 0.27 | 0.27 |
+| =dart analyze .= (whole kit) | — | — | 0.82 | 1.02 | 2.02 |
+
+** 1.5 Rebuild-scoping census (counts — load-independent)
+
+| App | widget-context =watch= | scoped | unscoped | % unscoped | provider-context (scoped) |
+|-----+------------------------+--------+----------+------------+---------------------------|
+| voicelab | 95 | 3 | 92 | 97% | 52 (0) |
+| word-bank | 61 | 5 | 56 | 92% | 14 (5) |
+| task-board | 9 | 0 | 9 | 100% | 9 (0) |
+| textloom | 0 | 0 | 0 | — | 0 (0) |
+| desktop_kit | 0 | 0 | 0 | — | 0 (0) |
+| *family total* | *165* | *8* | *157* | *95%* | *75 (5)* |
+
+* 2. Ranked opportunities — each with its justifying measurement
+
+** 2.1 Batch test files in CHUNKS of <=24 — measured 2.5x - 3.8x
+
+*Measurement:* the same 6 files cost 8.46-11.11 s in one =flutter test=
+invocation and 21.30-41.81 s as six invocations. *Ratio 2.52x - 3.76x,
+median 3.30x.* The mechanism is the measured per-invocation floor: *3.65 s and
+~605 MB to run a single 8-line test*, paid once per invocation regardless of how
+much work that invocation does.
+
+*The chunk cap is not a safety margin, it is a hard constraint.* Batching *all*
+files into one invocation *deadlocks*: 48 files hung 4/4 (§4). 24 files completed
+reliably at every concurrency tried. So the recommendation is *chunked* batching —
+one invocation per chunk of at most 24 files — not one invocation for the suite.
+
+*Estimated win, as a ratio:* the kit's 98 files as ~5 chunks of 24 pay
+=5 x 3.65 s ~ 18 s= of invocation floor against =98 x 3.65 s ~ 358 s= one-per-file
+— a *~20x reduction in startup overhead*, or *~3.1x on total suite wall time*
+(5 chunks x 27.4 s measured for a 24-file chunk ~ 137 s, against ~348 s
+one-per-file at the best per-file rate measured). Both estimates sit inside the
+directly measured 2.5x - 3.8x batch/per-file band.
+
+This is the highest-leverage finding in the document, because the migration runs
+these suites repeatedly as gates.
+
+*Extrapolation stated plainly:* the 2.5x-3.8x ratio is measured on 6 of 98 files;
+the per-invocation floor and the 24-file chunk time are measured directly. The
+358 s, 137 s and 20x figures are *arithmetic on those measurements, not observed
+runs* — and the full 98-file suite was never executed (§5.1).
+
+** 2.2 Pin =flutter test --concurrency= for the gate — the OOM lever
+
+*Measurement:* peak RSS is *linear in concurrency* and load-independent:
+
+#+begin_src text
+peak_RSS_MB ~= 640 + 96 x concurrency
+#+end_src
+
+fitted from 736.3 MB at =conc=1= and 1,405.1 MB at =conc=8= (slope 95.6 MB per
+concurrency unit, intercept ~640 MB).
+
+The process architecture that produces it was observed directly with =ps=: *one*
+=flutter_tools= dart process (~113 MB) + *one shared* =frontend_server_aot=
+compiler (~400-420 MB) + *N concurrent* =flutter_tester= processes
+(~123-131 MB each).
+
+*This is the mechanism behind kit todo =b4749c15='s OOM.* The cost is not "2,656
+tests are too many"; it is a ~640 MB fixed floor per invocation plus ~96 MB per
+concurrent tester. Two consequences follow, and they pull in opposite directions
+from the naive reading:
+
+1. Running *many suites concurrently* multiplies the 640 MB floor, not the 96 MB
+   increment — so N parallel =flutter test= invocations is the expensive shape.
+2. Running *one file per invocation* pays that same 640 MB floor 98 times
+   sequentially, which is why §2.1 and this item are the same finding seen twice.
+
+*Estimated win, as a ratio:* pinning =conc=4= instead of the default caps peak
+RSS at ~1,048 MB against 1,337-1,405 MB measured at default — a *~1.3x reduction
+in peak memory*, and it was the fastest condition measured under load (36.75 s
+for 249 tests). Independently corroborated by the n=48 runs, where 848 / 1,069 /
+1,336 MB tracked concurrency 2 / 4 / default exactly as the model predicts.
+
+*This is a MEMORY lever only — it does NOT fix the deadlock.* Reducing
+concurrency to 4 and then 2 left the 48-file deadlock fully intact (§4). Pin
+concurrency to bound memory; cap the *chunk size* (§2.1) to avoid the hang. They
+are two separate controls for two separate failures, and conflating them would
+leave the worse one unaddressed.
+
+*Caveat, stated because it matters:* the wall-time column of the concurrency
+sweep is *load-contaminated* — the four conditions ran at loads 9.33 to 13.46,
+not at equal load. The U-shape with a minimum at =conc=4= is therefore
+*suggestive, not established*. The RSS column is robust; the wall column is not.
+
+** 2.3 Restore the Go build cache in CI — measured 10.3x
+
+*Measurement:* end-to-end =make check= is 3.76 s warm (median) and 38.83 s cold
+(median). *Ratio 10.3x.*
+
+*Estimated win:* a CI job that restores =GOCACHE= turns a ~39 s gate into a ~4 s
+gate, a *~10x reduction*. This is the entire actionable content of the Go build
+cost — see §3.4 for why the code itself is not worth touching.
+
+** 2.4 Make =govulncheck= conditional in the dev loop — 56% of the warm gate
+
+*Measurement:* =vuln= is 3.97 s of a ~7.05 s sum-of-medians for the warm
+per-target suite — *56%* — and its 307-325 MB peak RSS is *3.3x the
+next-highest target* (=lint=, 97-99 MB).
+
+*The load-bearing detail:* =vuln= is *cache-insensitive*. Cold 2.95/3.43/4.53 s
+versus warm 3.45/3.97/4.74 s — statistically identical, while =vet=, =test=,
+=lint= and =cov= each move by roughly 40x between cold and warm. So
+=govulncheck= is an *irreducible ~3-4.5 s floor* that cache restoration cannot
+touch, and it becomes the dominant cost of every warm run.
+
+*Estimated win, as a ratio:* moving =vuln= out of the per-commit loop (to a
+dependency-change trigger or a nightly) takes the warm gate from ~7 s to ~3 s of
+per-target work — roughly *2x on the dev-loop gate* — while losing nothing in CI,
+where it should still run every time.
+
+* 3. NEGATIVE results — measured, and deliberately not worth optimizing
+
+A negative result is a real finding. Each of these was measured, and each closes
+off a plausible-sounding optimization that would have cost time for nothing.
+
+** 3.1 The installer's =io.CopyN= buffering is NOT a bottleneck
+
+This was the brief's explicit question, and the answer is *no*.
+
+The buffered variant (1 MiB =bufio.Writer= per file) measured *median 1.340 s
+against the shipped path's 1.411 s*, with ranges overlapping almost entirely
+(1.178-2.041 vs 1.167-2.226). That difference is inside the noise.
+
+The decomposition shows why: *the gzip codec is ~100% of the cost.* Codec-only
+(1.368 s median) ~ codec + tar framing (1.196 s) ~ codec + tar + all disk writes
+(1.411 s). Tar framing and file writes together add nothing measurable above the
+load noise, and the shipped path allocates only *+0.78 MB / +1,372 allocs* over
+the bare codec. There is no buffering win available because buffering is not
+where the time goes.
+
+** 3.2 No codec swap gives a defensible win either
+
+=klauspost/compress= (1.399 s median) and =pgzip= (1.430 s) versus stdlib
+(1.622 s) suggest perhaps ~1.15x, but the ranges overlap so heavily
+(1.253-2.238 and 1.220-1.663 against 1.518-2.024) that *under this load no
+difference is defensible*. Reported as: not measurable, not as a win.
+
+=pgzip='s parallelism cannot pay off on a host already saturated by seven
+sibling agents; it might on an idle machine, and that is *unmeasured*.
+
+** 3.3 Installer extraction overall is not worth optimizing
+
+A real end-user extraction is *0.888-1.463 s for the 55 MiB payload and
+3.005-3.406 s for the 129 MiB one*, once per install. Even the most optimistic
+reading of §3.2 saves a fraction of a second on a one-time operation.
+
+Peak RSS is *~1.45x the compressed payload* (78.5 MB at 55 MiB; 187 MB at
+129 MiB), linear, because =ExtractTarGz= takes =data []byte= and holds the whole
+compressed payload resident. Streaming from an =io.Reader= would cut that to the
+gzip window plus buffers — but 187 MB on a desktop installer is not a problem
+worth an API change. Recorded because it is *linear*: a payload growth of another
+3x would make it one.
+
+The icon-cache refresh is *8.3 ms median* — 0.24% of a 3.4 s extraction. Nothing there.
+
+** 3.4 The Go module's build cost is not a code problem
+
+1,447 LOC across 10 files, warm =make check= 3.76 s. There is no code-level
+optimization worth making. The only lever is cache restoration (§2.3) and gate
+composition (§2.4) — both CI-design changes, not code changes.
+
+** 3.5 The 5,949-line file is NOT an analyze-cost problem
+
+This is the most counterintuitive negative result and the numbers are clear:
+*the 2,768-line =emacs_buffer.dart= analyzes in 0.22-0.27 s — roughly 6x FASTER
+than the 189-line =window_tree_test.dart= at 1.57-1.92 s.*
+
+Across 8 → 2,768 lines the correlation between line count and analyze time is
+*negative*. What predicts cost is the *import closure*: the test files pull
+=package:flutter_test= and its large transitive closure, while the big library
+file does not. Whole-tree =dart analyze .= over the entire kit is *0.82-2.02 s*.
+
+So splitting =textloom/lib/emacs_buffer_editor.dart= may well be justified on
+maintainability, reviewability or merge-conflict grounds. It is *not* justified on
+analyze or compile performance, and this document should not be cited as support
+for that argument.
+
+*First attempt was an artifact, and is recorded rather than hidden.* The initial
+run used the 2,768-line file as the warm-up target, giving it a warm cache the
+others lacked, and produced a spurious 6x-faster reading for the wrong reason.
+The measurement was redone with *per-file warm-up* so every file was timed from
+an equalized cache state. The conclusion survived; the first run's numbers were
+discarded.
+
+** 3.6 Riverpod is NOT claimed to be a bottleneck
+
+=ui/docs/framework-subsumption-design.org= §4 states: "Do NOT justify Riverpod on
+performance -- neither it nor provider is a bottleneck at these app sizes."
+
+*That decision is not contradicted here, because it was not measured.* No
+state-management overhead was benchmarked; no rebuild was observed. §1.5 counts
+rule adherence, which is a different claim (see §5.3). The recorded decision stands.
+
+* 4. The 48-file =flutter test= deadlock — a defect, diagnosed and characterized
+
+Running 48 of the kit's 98 test files in *one* =flutter test= invocation
+*deadlocked in 4 out of 4 attempts*, across three different concurrency settings
+and loads spanning 2.78 to 16.80.
+
+| Condition | wall | peak RSS | procs | load before | outcome |
+|-----------+-------+----------+-------+-------------+---------|
+| default concurrency, run 1 | 11 min 41 s observed | — | 8 | 16.80 | *hung*, killed |
+| default concurrency, run 2 | 423.1 s (timeout) | 1,336 MB | 9 | 16.80 | *hung* |
+| =--concurrency=4= | 423.0 s (timeout) | 1,068.8 MB | 6 | *2.78* | *hung* |
+| =--concurrency=2= | 423.0 s (timeout) | 845.9 MB | 4 | *3.79* | *hung* |
+
+By contrast *n<=24 files completed reliably* at concurrency 1, 2, 4, 8 and at
+default, across many runs, always with all 249 tests passing.
+
+*Diagnosed, not assumed.* The brief required diagnosing a hang rather than
+presuming one, and the evidence is decisive:
+
+| Evidence | Observation |
+|----------+-------------|
+| CPU accumulation | *ZERO* =utime+stime= jiffies across 20 s, on all 8 processes in the group |
+| Blocked state | all =S=; =futex_do_wait= (tools, compiler), =ep_poll= (testers) |
+| Elapsed | 11 min 41 s alive with no progress |
+| Test output | none written at all |
+| load1 during hang | *1.09* — the host had gone idle, i.e. nothing was running |
+
+Zero CPU accumulation over 20 s while blocked on futexes, with the host idle, is
+a *deadlock* — not slowness, and not an OOM (peak RSS never exceeded 1,336 MB
+against 11-13 GB available).
+
+*Three candidate causes, two eliminated by measurement:*
+
+1. *Load — ELIMINATED.* It deadlocked at =load1= 2.78 and 3.79 on a nearly idle
+   machine, and the =conc=2= run's load *fell to 1.30* while hung.
+2. *Concurrency — ELIMINATED.* Reducing =--concurrency= from default to 4 to 2
+   did not help; all three hung. Concurrency changed only the memory footprint
+   (1,336 → 1,068 → 846 MB), exactly as the §2.2 model predicts, without
+   affecting the outcome.
+3. *File count per invocation — the surviving hypothesis.* The transition sits
+   between 24 files (reliably fine) and 48 files (4/4 deadlock). The exact
+   threshold was *not bisected* — that is the obvious next experiment.
+
+*This changes the batching recommendation and is why §2.1 says CHUNKED.* "Put
+every file in one invocation" is not merely suboptimal, it *deadlocks*. The
+correct shape is batch-in-chunks with a cap at or below 24 files.
+
+It is also *not* the OOM in todo =b4749c15=: this failure mode is a deadlock at
+under 1.4 GB. The OOM is a separate phenomenon, and §2.2's memory model addresses
+that one.
+
+Every terminated run was killed by signalling *my own process group*
+(=kill -- -PGID=; PGIDs 1590014 / 1642275, every member verified scratch-rooted
+before signalling) — never a name pattern, so no sibling's run could be touched.
+A sibling's =frontend_server= for =textloom/.worktree/test/integration-harness= was
+identified and deliberately left alone.
+
+This bounds every suite figure in §1.3: the scaling sweep could not be extended
+past 24 files.
+
+* 5. What could NOT be measured, and what it would take
+
+** 5.1 The full kit and voicelab suites
+Prohibited by the brief — sibling agents needed the memory headroom and todo
+=b4749c15= documents an OOM. *Every suite number here is a subset measurement
+with its extrapolation stated.* The kit subset was 6 of 98 files (mean 177 lines
+vs suite mean 190 = 0.93x, so representative by size); scaling ran to 24 files.
+*voicelab' 103 files and word-bank's 66 were never executed at all* — they were
+only counted. Measuring them needs an idle host and a memory ceiling derived from
+the §2.2 model.
+
+** 5.2 A truly cold =dart analyze=
+The analyzer's byte-store is a *shared =~/.dartServer=, 2.5 GB*. Clearing it
+would have invalidated every sibling agent's analyze for the rest of the session,
+so it was deliberately not cleared. The "cold" figure in §1.4 clears only the
+scratch copy's =.dart_tool= subdirectories, which is a *weaker* cold than CI
+would see. A real cold number needs a container or a disposable =HOME=.
+
+** 5.3 Real rebuild counts — the gap behind §1.5
+*No rebuild was ever observed.* §1.5 is a count of house-rule adherence, not a
+performance measurement, and it must not be read as one. Turning it into a real
+number requires: a scratch copy of one app, a =RebuildCounter= or
+=debugProfileBuildsEnabled= instrumentation, and a driver that toggles one piece
+of chrome while counting =build()= calls on the shell's =IndexedStack=. The
+obstacle is that =textloom= (868 MB) and =voicelab= both depend on =desktop_kit=
+*by git ref*, so an offline scratch copy needs that ref fetched before
+=pub get= resolves. Budget one focused session.
+
+Until then the honest statement is: *95% of widget-context =ref.watch= call sites
+family-wide are unscoped, and the cost of that is unmeasured.*
+
+** 5.4 textloom's actual 5,949-line file
+Measured up to 2,768 lines (the kit's largest) for the git-ref reason above. The
+correlation across the measured range is negative, so the *direction* of the
+extrapolation in §3.5 is safe, but that specific file was not analyzed.
+
+** 5.5 An idle-machine baseline
+Everything here was measured under up to 7 concurrent agents. =pgzip='s parallel
+decompression (§3.2) and the concurrency sweep's wall-time column (§2.2) are the
+two results most likely to change on an idle host. (The deadlock in §4 is *not*
+one of them — it was reproduced at =load1= 2.78.)
+
+** 5.6 The deadlock threshold was not bisected
+§4 establishes 24 files fine / 48 files deadlocked (4/4), independent of
+concurrency and load. *The threshold between them was not located.* Bisecting it
+(32, 40, 36 …) is a cheap, high-value follow-up because it sets the chunk cap in
+§2.1 on evidence rather than on the largest size known to work. Root-causing the
+deadlock itself — a Dart/Flutter tool issue, plausibly in the
+=frontend_server= <-> =flutter_tester= handshake — is a larger piece of work and
+likely belongs upstream.
+
+* 6. Source Verification Notes
+
+** Measured — commands, repetitions and instruments
+
+Every number in §1 came from a command executed this session. Harnesses live in
+a scratch directory outside the repo (job =9c2a051d=).
+
+| Claim | Instrument | Reps |
+|-------+------------+------|
+| Go per-target + end-to-end, warm/cold | =time-target.sh= / =time-cold.sh=, =/usr/bin/time -f '%e %M'= over =make -C <scratch>= | 3 each |
+| Extraction layer decomposition | =go test -bench -benchtime=3x -count=3= on a scratch module with a =replace= to the installer package | 3x3 |
+| Codec ceiling | same harness, =klauspost/compress= + =pgzip= from the *existing shared module cache* (no network, no cache mutation) | 3x3 |
+| Single-extraction peak RSS | standalone =rssprobe= + =/usr/bin/time -f 'RSS %M'= | 3 per payload |
+| Icon-cache refresh | =python3 perf_counter= around =gtk-update-icon-cache -f -t= | 10 |
+| Flutter wall + peak group RSS | =runmeas.py= — child in its own session, polls =/proc/<pid>/statm= every 50 ms summing RSS over the whole process group | 2-3 per condition |
+| Hang diagnosis | =/proc/<pid>/stat= fields 14+15 sampled 20 s apart; =/proc/<pid>/wchan= | 8 processes |
+| =dart analyze= | =python3 perf_counter=, per-file warm-up before each file's reps | 3 each |
+| =ref.watch= census | =count_watch.py= / =classify_watch.py= — balanced-paren scan, comments and string literals stripped, multi-line aware | exhaustive |
+| Payload sizes | =stat -c%s=, =gzip -l= | 1 (deterministic) |
+| Test-file counts | =find ... -name '*_test.dart' \| wc -l= per =pubspec.yaml= root | 1 (deterministic) |
+
+*Counts are exact and load-independent* (§1.5, file/test inventories). *Timings
+carry the concurrency confound* and are given as min/median/max with =load1=.
+
+*Instrument note (MCP).* The =ast= capability surface was queried before
+resorting to text tools. It reports Dart at =deep: none, structural_read:
+partial= with an =lsp-*= semantic tier. =lsp-symbols= on
+=textloom/lib/emacs_buffer_editor.dart= *succeeded*, returning a 15-symbol tree —
+so the Dart LSP tier is healthy, and its own tool description claiming
+"Today only Python is wired" is a *documentation defect, not a degraded
+upstream*. Worth filing.
+
+** Validated, not assumed
+
+- *The =ref.watch= counter was validated against grep both ways.* On
+  =editor_providers.dart= it found exactly the 4 sites grep found (lines 79, 294,
+  300, 306). On =app_shell.dart= its total (16) matches grep's =ref.watch(= count
+  exactly, while correctly classifying the *2 multi-line* =.select= uses that a
+  same-line grep reports as *zero*.
+- *This is why the naive grep the brief suggested would have been wrong.* The
+  family writes scoped watches across lines:
+  #+begin_src dart
+  ref.watch(
+    settingsProvider.select((s) => s.toolbarScale),
+  )
+  #+end_src
+  =grep 'ref.watch(' | grep -v select= would report voicelab as *100%*
+  unscoped. The measured figure is *97%*. A line-oriented count is not merely
+  imprecise here, it is *biased in a known direction*.
+- *Go targets were verified to pass, not to fail fast* (§1.1) — otherwise a
+  target that errored in 0.3 s would have read as a fast target.
+- *The =dart analyze= result survived correction of a warm-up artifact* (§3.5).
+- *Two independent corroborations of the existing census:* =textloom= and
+  =desktop_kit= both measured *0* =ref.watch= sites, matching the design doc's
+  population table (textloom "none" / raw =InheritedWidget=; the kit
+  state-management-agnostic per =deps-guard=).
+- *Subset representativeness was checked, not asserted:* the 6-file subset means
+  177 lines against the suite's 190 (0.93x).
+
+** Estimated — labelled, never presented as measured
+
+- =peak_RSS_MB ~= 640 + 96 x concurrency= is a *two-point linear fit* (736.3 MB
+  at conc=1, 1,405.1 MB at conc=8), not a regression over many points.
+- =98 x 3.65 s ~ 358 s= (§2.1) is *arithmetic* on a measured per-file floor, not
+  an observed 98-file run.
+- The "~2x dev-loop gate" figure in §2.4 is arithmetic on measured medians.
+- Extrapolation of §3.5 from 2,768 to 5,949 lines is *directional only*.
+- =pgzip='s idle-machine behaviour is *unmeasured speculation* and is flagged as such.
+
+** Corrections made during this session
+
+| Original | Corrected to | What revealed it |
+|----------+--------------+------------------|
+| 2,768-line file analyzes 6x faster than an 8-line file | artifact — it was the warm-up target | per-file warm-up equalizing cache state |
+| Payload sizes 20-60 MB (brief's estimate) | 58 MB and *136 MB* real artifacts | =stat= / =gzip -l= on files already on disk |
+| kit = "98 test files" flat | 98 in the package + *67 more* in =example/= | per-=pubspec.yaml= enumeration |
+| 48-file run is "slow under load" | *deadlock* | zero CPU jiffies over 20 s + =futex_do_wait= |
+| the deadlock is plausibly load-induced | *it is not* — reproduced at load1 2.78 and 3.79 | =conc=4= / =conc=2= runs on a near-idle host |
+| lowering =--concurrency= should avoid the deadlock | *it does not* — 4/4 hung across default/4/2 | the =conc= sweep at n=48 |
+| "batch everything into one invocation" (§2.1, first draft) | *chunk at <=24 files*; one big invocation deadlocks | the same 4/4 result |
+| a same-line grep can count scoped watches | it cannot; multi-line is the norm here | balanced-paren scan vs grep on =app_shell.dart= |
+
+** The concurrency confound, stated plainly
+
+Seven sibling agents ran throughout. Observed =load1= spanned *1.09 to 23.83* and
+is recorded beside each sample. Consequences, stated rather than smoothed:
+
+1. *No absolute wall-clock here is a clean baseline.* Each is a
+   load-contaminated sample with its load recorded.
+2. *Ratios taken from interleaved runs are the trustworthy figures* — the
+   individual/batch ratio, cold/warm, and the layer decomposition all compare
+   runs made minutes apart under comparable load.
+3. *Peak-RSS figures are the most robust* results in this document, because a
+   memory footprint is largely load-independent. The concurrency/RSS model and
+   the 1.45x payload/RSS ratio are the two conclusions least likely to move on an
+   idle machine.
+4. *The concurrency sweep's wall-time column is explicitly NOT clean* — its four
+   conditions ran at loads 9.33-13.46.
+5. Wide min/max spreads (e.g. individual-invocation sums 21.30 → 41.81 s) are
+   *reported, not averaged away*; the spread is the confidence statement.
+
+* Glossary
+- peak group RSS :: summed resident set size across *every* process in the run's
+  process group, sampled at 50 ms. Not =/usr/bin/time='s =%M=, which reports the
+  max of a single waited-for child and therefore *understates* concurrent
+  =flutter_tester= processes.
+- warm / cold (Go) :: warm = shared =GOCACHE=; cold = a *private* =GOCACHE= and
+  =GOLANGCI_LINT_CACHE= created per repetition. The shared caches were never
+  cleared, so sibling agents were unaffected.
+- widget-context vs provider-context :: whether a =ref.watch= site's nearest
+  enclosing declaration is a =build()= / =builder:= (rebuild scoping applies) or
+  a provider assignment (idiomatic dependency wiring). A documented approximation.
+- per-invocation floor :: fixed wall time and memory to start =flutter test= at
+  all, measured with a single 8-line one-assertion file: *3.65 s / ~605 MB*.
+- load-independent :: a measurement a busy CPU does not distort — counts, and
+  peak RSS to a good approximation.
+
+* Index
+- Go check-suite cost → [[*1.1 Go check suite — =frameworks/go= (10 =.go= files, 1,447 LOC)]], [[*2.3 Restore the Go build cache in CI — measured 10.3x]], [[*2.4 Make =govulncheck= conditional in the dev loop — 56% of the warm gate]]
+- installer extraction → [[*1.2 Installer extraction — REAL payloads, not synthetic]], [[*3.1 The installer's =io.CopyN= buffering is NOT a bottleneck]], [[*3.3 Installer extraction overall is not worth optimizing]]
+- test-suite cost / OOM todo =b4749c15= → [[*1.3 Flutter test suite — =ui-kit-private= (98 test files, 18,609 lines, 1,393 declared tests)]], [[*2.1 Batch test files per invocation — measured 2.5x - 3.8x]], [[*2.2 Pin =flutter test --concurrency= for the gate — the OOM lever]]
+- 48-file deadlock → [[*4. The 48-file =flutter test= hang — a defect, diagnosed]]
+- =ref.watch= scoping → [[*1.5 Rebuild-scoping census (counts — load-independent)]], [[*5.3 Real rebuild counts — the gap behind §1.5]]
+- large-file analyze cost → [[*1.4 =dart analyze= cost vs file size (cache state equalized)]], [[*3.5 The 5,949-line file is NOT an analyze-cost problem]]
+- Riverpod performance decision → [[*3.6 Riverpod is NOT claimed to be a bottleneck]]
+
+* Cross-References
+- Design being measured: [[file:../ui/docs/framework-subsumption-design.org]] (§4 Riverpod decision, honoured in §3.6)
+- CI design, the consumer of §2.3 / §2.4: [[file:ci-design.org]]
+- Architecture: [[file:architecture-and-process-design.org]]
+
+* Footnotes
+[fn:load] All timings were taken on a host shared with seven concurrent agents.
+=load1= is recorded beside every sample; the range observed was 1.09 - 23.83.
+This is the dominant confound in this document and §6 states its consequences.
+
+[fn:scratch] Harnesses and raw results, retained in a scratch directory outside
+the repo for job =9c2a051d=: =time-target.sh=, =time-cold.sh=, =runmeas.py=,
+=count_watch.py=, =classify_watch.py=, =bench/= (Go benchmarks),
+=sweep-results.jsonl=, =conc.jsonl=. No repository outside
+=docs/performance-baseline.org= was written.
+
+* CORRECTION 2026-07-30 — the flutter test deadlock does not reproduce
+
+Three claims in this document about =flutter test= chunking were re-measured
+against the kit's own 98-file / 1,818-test suite and did not hold. They had been
+propagated into two Makefiles as mandatory constraints and into a planned lint
+rule, so the correction matters beyond this file.
+
+| claim as recorded | re-measured 2026-07-30 |
+|-------------------+------------------------|
+| "48 files in ONE invocation deadlocks, 4 runs out of 4" | *did not reproduce.* 98 files in one invocation completed three times: 64s, 73s, 97s. 1,818 tests, all passed. |
+| "chunking is 2.5-3.8x FASTER" | *inverted.* Whole suite 64s; chunked at 24 across 19 invocations ~250s. Chunking is ~4x slower. The original comparison was against one-invocation-PER-FILE, which nobody runs. |
+| "peak RSS ~640MB + 96MB x concurrency" | *overestimates.* The model predicts 736MB at concurrency 1; the whole-suite run peaked at *468MB*, against 418-461MB per chunk. So ~2% memory difference, not a memory argument at all. |
+
+*What is NOT overturned, and must not be lost in the correction:* kit todo
+=b4749c15= records a genuine OOM at *~2,656 tests*. This suite is 1,818, and
+voicelab' larger suite was not re-measured. A sufficiently large suite may still
+need splitting — the correction is that chunking is not warranted *by default*,
+not that it is never warranted.
+
+*Why the original measurement may have differed:* it was taken during a
+nine-agent fan-out. The reporting agent stated it reproduced at load 2.78 and at
+=--concurrency= 2 and 4, which argues against simple contention — but the exact
+file set it used is not recorded here, so a single pathological test file cannot
+be ruled out. The discrepancy is recorded rather than resolved.
+
+*Method note.* Both the original claim and this correction came from measurement;
+the difference is that this one was taken against a named, reproducible suite
+(=ui-kit-private= at =a1d8eac=, =make test=) with the command, run count and
+peak RSS stated. A performance claim that does not name its workload cannot be
+re-checked, which is how this one survived long enough to reach two Makefiles.

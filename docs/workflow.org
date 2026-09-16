@@ -1,0 +1,85 @@
+:PROPERTIES:
+:ID:       frameworks-workflow
+:END:
+#+title: frameworks — workflow conventions
+#+date: 2026-08-10
+
+Project-specific conventions for this repo, read at session start per the
+Documentation Standards (§1.5 Project Workflow Docs). Everything here is
+specific to =frameworks=; broader house conventions (worktree layout, tag
+hygiene, commit process) apply across sibling repos and live outside this
+repo.
+
+* Release tags
+
+** Two independent tag namespaces
+This is a polyglot monorepo and the two halves are versioned separately.
+
+| namespace | covers | consumed as |
+|-----------+--------+-------------|
+| =go/vX.Y.Z= | the Go module at =go/= | =go run github.com/davidwalter0/frameworks/go/cmd/<x>@go/vX.Y.Z= |
+| =vX.Y.Z=    | the Dart/Flutter side, =ui/pkg/*= | a pubspec =git:= dep with =ref: vX.Y.Z= + =path: ui/pkg/<pkg>= |
+
+The =go/= prefix is required by Go's own module-in-subdirectory rule, not a
+style choice. The bare =vX.Y.Z= form is therefore the Dart side by
+elimination.
+
+** PREFER PATCH BUMPS (decided 2026-08-10)
+**Bump the patch component. Do not reach for a minor bump.**
+=v0.2.0 -> v0.2.1=, not =v0.2.0 -> v0.3.0=.
+
+This holds **even for additive API** — which ordinary semver would call a
+minor. Two reasons it is right here:
+
+1. =0.y.z= carries no semver compatibility guarantee in the first place, so a
+   minor bump buys no signal it would buy at =1.0+=; it only consumes
+   numbering space.
+2. The package is moving fast and in small increments. Reserving minor bumps
+   for genuine milestones keeps them *meaningful* — a =v0.3.0= should mean
+   something happened, not that a method was added on a Tuesday.
+
+Revisit when the API stabilises enough that a consumer would reasonably pin a
+range rather than an exact tag. Until then: patch.
+
+** Tag hygiene: supersede, never move
+A published tag is immutable. If a tag is wrong, publish the next one — never
+delete or re-point one that has been pushed. (A fleet-wide convention, applied
+consistently across sibling repos.)
+
+** Annotate, and say what changed
+Tags are annotated (=git tag -a=), and the message names new API, behaviour
+fixes, and anything a consumer must know. A consumer bumping a pin reads that
+message to decide whether the bump is safe; a bare tag makes them read the
+diff instead.
+
+* Landing changes
+
+Standard fleet flow: feature worktree under =.worktree/<topic>/<name>= -> gate
+-> =--ff-only= onto =.worktree/integration= (branch =integration/<YYYY-MM-DD>=)
+-> =--ff-only= onto =main= from the primary checkout.
+
+Gate both halves of the repo for whichever side you touched:
+
+#+begin_src sh
+make -C ui analyze && make -C ui fmt-check && make -C ui test && make -C ui vuln
+make -C go lint && make -C go vet && make -C go test && make -C go cov && make -C go vuln
+#+end_src
+
+=make -C ui test-only PKG=<pkg> ONLY=<file>= runs a single test file while
+iterating; it is deliberately NOT part of =check=.
+
+**Capture exit codes directly, never through a pipe.** =make … | tail= reports
+=tail='s status, which is how a red gate reads as green. Use
+=make … > log 2>&1; rc=$?=.
+
+* Consumers
+
+Changing =ui/pkg/desktop_kit= affects every host app. Land the package change
+here first, tag it, push, and only then bump the consumer's pin — a consumer
+cannot resolve a =git:= ref that is not on the remote.
+
+Known consumers of =desktop_kit=: textloom (migrated 2026-08-09 from the
+standalone =ui-kit-private= repo). The standalone repo still serves the
+other host apps and has not been retired.
+
+* Footnotes

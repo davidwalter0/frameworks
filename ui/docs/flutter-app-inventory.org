@@ -1,0 +1,362 @@
+:PROPERTIES:
+:ID:       frameworks-flutter-app-inventory
+:END:
+#+title: Flutter application inventory — desktop app family
+#+date: 2026-07-29
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-29
+:END:
+
+** Status
+Complete for all 11 applications + =desktop_kit=. Every number below was
+measured on 2026-07-29 against the working trees under
+=~/go/src/github.com/davidwalter0/=; none is estimated.
+
+** Completed
+- [X] Enumerate every Flutter project in the namespace
+- [X] Table 1 — high-level function per application (README ask #1)
+- [X] Table 2 — supporting widgets per application (README ask #2)
+- [X] Kit-adoption and state-management columns
+- [X] Chronology against the kit's first commit
+
+** Next Steps
+- [ ] Re-measure after each migration tranche; the adoption column is the
+  progress metric for the whole consolidation
+- [ ] Resolve whether =k8s-deploy-test-dashboard= is a planned app (todo
+  =802c68b9=)
+
+* Scope and method
+
+This answers the README's request to "list the projects using flutter under
+=~/go/src/github.com/davidwalter0/=" and to characterise them in *two separate
+tables* — high-level function, and supporting widgets.
+
+Method, so the numbers are reproducible:
+
+#+begin_src sh :results verbatim
+# application count
+find ~/go/src/github.com/davidwalter0 -name pubspec.yaml -not -path '*/.dart_tool/*'
+# dart file count per app
+find <app>/lib -name '*.dart' | wc -l
+# kit adoption
+grep -rl "package:desktop_kit/" <app>/lib | wc -l
+# kit pin
+grep -A2 'desktop_kit:' <app>/pubspec.yaml
+#+end_src
+
+"Kit files" counts files under =lib/= containing at least one
+=package:desktop_kit/= import — a file-level adoption measure, not a
+call-site one. It understates depth (one import may drive a whole pane) and
+overstates breadth (a single =DeskTheme= import counts the same as a full
+editor embed), so read it as a *ratio trend* across migration, not an
+absolute.
+
+* Chronology — the fact that explains everything else
+
+=ui-kit-private='s first commit is *2026-06-28*. Five consumers predate
+it:
+
+| App                  | First commit | Relation to kit          |
+|----------------------+--------------+--------------------------|
+| mail-sweep          |   2026-02-24 | pre-kit                  |
+| mountbridge             |   2026-02-28 | pre-kit                  |
+| voicelab            |   2026-06-07 | pre-kit                  |
+| alert-log |   2026-06-22 | pre-kit                  |
+| notekeep              |   2026-06-27 | pre-kit, *decommissioning* |
+| word-bank           |   2026-06-28 | concurrent               |
+| ghk_dashboard        |   2026-07-18 | post-kit                 |
+| textloom                |   2026-07-19 | post-kit                 |
+| netroute_manager           |          n/a | post-kit UI on a 2017 repo |
+| task-board            |          n/a | outlier — 3 commits, zero kit |
+
+The kit was *extracted from* the older apps and they never adopted the result
+back. That single fact predicts the duplication pattern better than app size
+does: =voicelab= has the **lowest** adoption ratio and the **most** forks.
+Consequence for planning — de-forking a pre-kit app is an *upgrade* (the kit
+copy is usually newer and larger), not inert deletion. See
+[[file:duplication-census.org]] for the measured deltas.
+
+* Table 1 — high-level function
+
+One row per application. "Support binary" is the non-Flutter process the UI
+drives; it is the axis along which =frameworks/go= is organised.
+
+| App                  | Purpose (from pubspec / README)                                            | High-level functions (panes / top-level features)                                  | Support binary / transport        |
+|----------------------+----------------------------------------------------------------------------+------------------------------------------------------------------------------------+-----------------------------------|
+| textloom                | Standalone Emacs-style editor built on desktop_kit                          | buffers + window tree, org support, keymap modes, Japanese input (Anthy), clipboard panel, kill-ring, recents tree, shell session | Anthy (subprocess), org support   |
+| voicelab            | Desktop GUI for the voicelab text-to-speech toolkit                       | editor, file browser, voices, render/exec, playback, create-audio, settings         | voicelab CLI (subprocess), audio player |
+| word-bank           | Japanese lexicon UI — glossary + kanji decomposition                       | browser, detail, document, lookup/span, parse, stroke order, settings               | lexicon backend (subprocess)      |
+| ghk_dashboard        | Desktop dashboard for ghk — journal logs and Prometheus metrics            | log/journal view, metrics charts, state strip, settings, about                      | ghk (GraphQL/MCP), Prometheus     |
+| notekeep              | Org-mode editor and viewer *(decommissioning — inventory only)*            | org outline/fold/table editing, viewer                                             | org support client                |
+| alert-log | Notification history desktop dashboard                                     | paginated sortable history table, date tree, category tree, appearance, clipboard pane | notification daemon store         |
+| mountbridge             | mountbridge cache management UI with GNOME indicator                          | service status, account avatar, settings, SNI tray indicator, extension dialog, update/restart banners | mountbridge daemon, StatusNotifierItem |
+| mail-sweep          | Linux desktop UI, JSON-RPC sidecar over stdio                              | subscription list + detail, tag dialog, batch unsubscribe sheet, delete confirm, settings | JSON-RPC sidecar over stdio       |
+| netroute_manager           | Desktop manager for netroute endpoints                                 | endpoint health, logs, CIDR blocks, mDNS-discovered peers, verify dialog, settings  | netroute over gRPC            |
+| task-board            | Task management notification system — Flutter client                       | task list, notification list + detail, shell                                       | task-board service                 |
+| desktop_kit          | Shared Flutter desktop UI components *(library, not an app)*               | see Table 2 — it is all supporting surface                                          | Anthy, org support (optional)     |
+| example (in kit)     | Kit gallery                                                                | component gallery / manual proving ground                                          | —                                 |
+
+** Adoption and state management
+
+| App                  | Dart files (lib) | Files importing kit | Ratio | Kit pin      | State management        |
+|----------------------+------------------+---------------------+-------+--------------+-------------------------|
+| textloom                |               67 |                  38 |   57% | sha =5a610a6= | none                    |
+| voicelab            |               77 |                  12 |   16% | =v0.2.4=      | riverpod ^2.4.9         |
+| word-bank           |               56 |                  14 |   25% | =v0.2.3=      | riverpod ^2.4.9         |
+| ghk_dashboard        |               36 |                  10 |   28% | =path=        | raw InheritedWidget     |
+| notekeep              |               66 |                  17 |   26% | =v0.2.3=      | riverpod ^3.3.2         |
+| alert-log |               60 |                  12 |   20% | =v0.2.3=      | riverpod ^2.5.0         |
+| mountbridge             |               26 |                   3 |   12% | =v0.2.3=      | *provider ^6.1.1*       |
+| mail-sweep          |               32 |                   7 |   22% | =v0.2.3=      | riverpod ^2.5.0         |
+| netroute_manager           |               22 |                  11 |   50% | =path=        | none                    |
+| task-board            |               39 |                 *0* |    0% | *none*        | riverpod ^3.3.1         |
+| example (kit)        |               51 |                 n/a |     — | =path=        | none                    |
+| desktop_kit          |         121 lib  |                   — |     — | —            | none (deliberately)     |
+
+Three facts to carry forward:
+
+1. *The pin surface is fragmented*: two apps on =path=, one on a bare sha, six
+   on =v0.2.3=, one on =v0.2.4=, one on nothing. A big-bang move breaks most of
+   them simultaneously — which is precisely why the migration is copy-first
+   (see [[file:framework-subsumption-design.org]]).
+2. *State management straddles a major boundary*: riverpod 2.x (four apps),
+   riverpod 3.x (two), =provider= (one), nothing (four). The kit carries no
+   state dependency *by design* and enforces it with =make deps-guard=.
+3. *=task-board= is the outlier that matters most*, next section.
+
+** =task-board= — the promotion that landed and the adoption that never did
+
+=task-board/ui= imports =desktop_kit= in *zero* files and has no =desktop_kit=
+dependency at all, yet ships three widgets with the *same public class names* as
+kit files:
+
+| Widget           | Kit                               | task-board | Differing lines | Shared class names                          |
+|------------------+-----------------------------------+-----------+-----------------+---------------------------------------------|
+| adaptive_layout  | =layout/adaptive_layout.dart= 217 |       237 |             256 | =AdaptiveLayout=, =LayoutMode=              |
+| led_indicator    | =status/led_indicator.dart= 168   |        99 |             139 | =LedIndicator=, =_LedIndicatorState=, =LedStatus= |
+| resize_handle    | =layout/resize_handle.dart= 63    |        53 |              22 | =ResizeHandle=                              |
+
+*This is not independent reimplementation — the direction is the opposite of
+what the numbers first suggest.* =task-board/docs/desktop-kit-gap-evaluation.org=
+(2026-07-04) inventoried both sides, found the kit had *no* layout or status
+tier, and specified a two-part plan: *(A) adopt* the kit's theme / settings /
+clipboard / about, and *(B) promote* =AdaptiveLayout=, =ResizeHandle= and
+=LedIndicator= out of =task-board= into new =desktop_kit_layout= /
+=desktop_kit_status= entrypoints, refactored to controlled widgets because the
+kit forbids state-management dependencies.
+
+Part B *shipped*: kit commit =af177de= (2026-07-04) is titled "layout+status:
+promote AdaptiveLayout/ResizeHandle/SpanHost/LedIndicator". Part A never ran —
+the doc's own Session State still reads =[ ] Adoption worktree=.
+
+The divergence is therefore *explained and expected*, not drift:
+
+- =task-board='s =AdaptiveLayout= is still Riverpod-coupled — it reads
+  =ref.watch(localStorageProvider)= and writes fractions back through
+  =ref.read(...)= at four call sites.
+- The kit's is the *controlled refactor* the doc mandated: =required this.mode=
+  with callbacks, no =WidgetRef=.
+
+So =task-board= is the **origin** of three kit components and simultaneously the
+only app that consumes none of the kit. The fork was not created by ignorance;
+it was left behind by a half-executed plan.
+
+Why this is the most instructive row in the table:
+
+1. *Promotion without adoption doubles the surface.* The kit gained a layout
+   tier and =task-board= kept its copy, so the family went from one
+   implementation to two. Any consolidation that promotes code without a
+   *gated* adoption step reproduces this exactly.
+2. It is the cheapest migration pilot available — no kit history to unwind, no
+   pin to renegotiate, three commits total, and already on Riverpod 3 (the
+   chosen standard).
+3. Its =Part A= list (theme → =DeskTheme=, =local_storage= → =SettingsStore=,
+   clipboard, About, =Foldable=) is a *pre-written, evidence-backed migration
+   script* that should be executed rather than re-derived.
+
+The governing lesson for =frameworks=: the copy-first invariant must include an
+explicit *retire-the-fork* step with a verification gate, or the migration ends
+in the =task-board= state — a correct shared implementation that nobody consumes.
+
+* Table 2 — supporting widgets
+
+The README asks for the supporting widgets as a table *separate* from
+high-level function. Rows are the reusable surface below the pane level.
+Bold marks a component with a kit equivalent — i.e. a consolidation
+candidate. Line counts are the file, measured 2026-07-29.
+
+** desktop_kit — the shared surface as it stands
+
+98 files / 24,905 lines under =lib/src=, behind 22 public barrel entry points
+(=desktop_kit_theme.dart=, =desktop_kit_keymap.dart=, …). Grouped by concern:
+
+| Area           | Components (line count)                                                                                                | Notes                              |
+|----------------+------------------------------------------------------------------------------------------------------------------------+------------------------------------|
+| layout         | =adaptive_layout= 217, =span_host= 403, =resize_handle= 63                                                              | the three-way fork target          |
+| widgets        | =auto_hide_bottom_bar= 213, =foldable= 179, =file_ref= 115                                                              |                                    |
+| theme          | =appearance_pane= 1004, =desk_theme= 445, =desk_palette= 281, =presets= 130, =apca= 115, =contrast= 47, =hct_tools= 181, =font_tools= 177, =display_config= 99, =host_ui_font= 67, =ui_scale= 57, =font_parsing= 39, font enumeration (io/web/default) 82 | WCAG/APCA-guarded; the largest single area |
+| settings       | =settings_presentation= 686, =settings_store= 157, =saved_indicator= 109, backends (io/web/stub/default) 196            | the surface word-bank bypasses    |
+| keymap         | =keymap_editor= 952, =keymap_registry= 674, =editor_intents= 556, =keymap_test_field= 481, =sequence_matcher= 472, =keymaps= 360, =key_chord= 294, =keymap_config= 235, =key_chord_sequence= 233, =keymap_editor_surface= 227, =kill_ring= 193, =keymap_help= 192, =text_motions= 125, =prefix_dispatcher= 122, =mark_state= 78, =keymap_mode= 74, =xi_glyph= 59 | Emacs/CUA engine                   |
+| editor         | =emacs_buffer= 2768, =emacs_search= 505, =emacs_edit_ops= 274, =window_tree= 244, =text_fill= 196, =emacs_completion= 181, =swiper= 131, =buffer_menu= 78, =emacs_registers= 73, =narrow_state= 52 | =emacs_buffer= is the single largest file |
+| anthy / IME    | =preedit_session= 704, =ime_controller= 562, =anthy_egg= 513, =anthy_user_dictionary= 233, process + dictionary IO 268  | Japanese input                     |
+| kana           | =kana= 692, =romaji_input_buffer= 288; keymaps =anthy_keymap= 449, =kana_keymap= 194                                     |                                    |
+| org            | =org_support_client= 474, =org_fold= 382, =org_table= 383, =org_structure= 277, =org_outline= 125, =babel_edit= 87       |                                    |
+| config         | =config_harvester= 531, =sexp= 456, =emacs_kbd= 382, =config_seed= 226; =elisp_eval= 494                                 | Emacs config ingestion             |
+| clipboard      | =primary_selection= 298, =primary_text_field= 217, =clipboard= 71                                                       | CLIPBOARD + PRIMARY                |
+| host           | =capabilities= 223, host env (5 files) 223, host process (4 files) 154                                                   | platform seams                     |
+| syntax         | =emacs_faces= 348, =imenu_index= 102                                                                                     |                                    |
+| status         | =led_indicator= 168                                                                                                      | the =e321e56= ticker fix lives here |
+| about/version  | =about_dialog= 231, =version_info= 78                                                                                    |                                    |
+| ordered_match  | =ordered_match= 117                                                                                                      |                                    |
+
+** Per-application supporting widgets
+
+| App                  | Supporting widgets (line count)                                                                                                                   |
+|----------------------+---------------------------------------------------------------------------------------------------------------------------------------------------|
+| textloom                | =clipboard_panel= 641, *=settings_categories= 590*, =tabulated_list= 588, =editor_settings_pane= 371, =org_header_theme= 338, =recents_overlay= 323, =emacs_editor_settings= 295, =shell_session= 263, =kill_ring_dialog= 212, =emacs_shell_core= 192, =recents_tree= 185, =org_header_preview= 177, *=emacs_face_theme= 176*, =buffer_list_dialog= 153, =org_file_menu_button= 140, *=action_strip= 136*, *=chrome_action= 53* |
+| voicelab            | *=settings_pane= 3157*, =file_browser_pane= 1649, =voices_pane= 1439, *=app_shell= 1392*, *=kana_text_field= 1135*, *=settings_providers= 830*, =editor_pane= 805, =create_audio_dialog= 706, =render_pane= 638, *=theme= 601*, =playback_pane= 364, =file_menu= 333, *=resizable_split= 270*, =brand_glyph= 267, *=action_strip= 262*, =audio_file_panel= 238, *=about= 221*, *=chrome_action= 159*, *=keymap_toggle_chip= 69* |
+| word-bank           | =detail_panel= 1435, =browser_panel= 982, *=settings_page= 914*, =document_pane= 785, *=settings_models= 559*, *=theme= 262*, =span_pane= 231, =stroke_order= 197, *=resizable_split= 174*, =feature_flags= 132, =parse_pane= 126, =app_icon= 90, =jp_char= 72, =lexicon_options= 55, *=adaptive_panels= 46*, *=foldable_section= 41*, *=keymap_toggle_chip= 43*, *=about= 27* |
+| ghk_dashboard        | *=shell= 399*, =state_strip= 326, *=categories= 149*, *=settings_screen= 53*, *=about_screen= 50*                                                   |
+| alert-log | =paginated_sortable_table= 981, =settings.freezed= 545 (generated), *=appearance_pane= 513*, *=settings_view= 309*, =date_tree= 299, *=notif_palette= 188*, =clear_history_dialog= 183, =ui_settings= 165, =clipboard_pane= 163, =nav_rail= 152, *=theme_providers= 124*, =category_tree= 106, =base64_cell= 80, *=app_theme= 79*, *=app_shell= 53*, =settings.g= 51 (generated) |
+| mountbridge             | *=settings_view= 433*, =account_avatar= 143, =sni_indicator= 141, =service_status_card= 94, =extension_dialog= 74, =update_banner= 38, =restart_banner= 29 |
+| mail-sweep          | =tag_dialog= 190, =delete_confirm_dialog= 168, *=settings_view= 161*, =subscription_detail_pane= 138, =unsub_batch_sheet= 128, *=app_shell= 103*, =connection_banner= 91, *=settings_providers= 40*, =status_badge= 35, *=ui_settings= 24*, =empty_state= 20 |
+| netroute_manager           | *=categories= 165*, =verify_dialog= 126, *=shell= 116*, =connection_banner= 49, *=settings_screen= 48*, =status_chip= 39                            |
+| task-board            | *=adaptive_layout= 237*, =notification_list_item= 126, *=app_shell= 118*, =notification_detail= 117, =task_list_item= 110, *=led_indicator= 99*, *=app_theme= 81*, *=resize_handle= 53*, *=theme_provider= 35* |
+
+** Reading the table — five recurring shapes
+
+Every application independently grew the same five things. This is the
+=app_kit= tier's requirement list, derived from the table rather than
+guessed:
+
+1. *App shell / chrome* — =app_shell= in voicelab (1392), alert-log
+   (53), mail-sweep (103), task-board (118); =shell= in ghk_dashboard (399) and
+   netroute_manager (116); =chrome/= in textloom. Nine of eleven apps. The kit has *no
+   shell tier at all* — it stops at =adaptive_layout=/=span_host=.
+2. *Settings presentation* — =settings_pane= 3157 / =settings_page= 914 /
+   =settings_view= 433, 309, 161 / =settings_screen= 53, 48 / =categories= 165,
+   149 / =settings_categories= 590. Every app. The kit has
+   =settings_presentation= 686 + =settings_store= 157, and the two largest app
+   surfaces bypass them.
+3. *Theme entry point* — =theme= 601, 262; =app_theme= 81, 79; =notif_palette=
+   188; =theme_providers= 124; =theme_provider= 35; =emacs_face_theme= 176. The
+   kit has =desk_theme= 445 + =appearance_pane= 1004; apps re-derive the
+   *wiring*, not the palette maths.
+4. *Status / connection affordance* — =connection_banner= 91, 49;
+   =status_badge= 35; =status_chip= 39; =state_strip= 326; =led_indicator= 99;
+   =service_status_card= 94; =update_banner= / =restart_banner=. Kit has only
+   =led_indicator= 168.
+5. *About / version* — kit 231, voicelab 221, ghk 50, word-bank 27.
+
+Items 1–3 are absent or incomplete in the kit and present in nearly every app:
+that is the gap =frameworks/ui/pkg/app_kit= exists to close. Items 4–5 exist in
+the kit and are re-implemented anyway: that is a *discoverability* gap, and
+=cmd/ui0= is the answer to it (a capability with no =ui0= surface is not
+discoverable, hence not done).
+
+*Caveat on item 1, established by the =task-board= case above:* "the kit has no
+shell tier" was true when the 2026-07-04 evaluation was written, and the kit has
+since gained =layout/= (=adaptive_layout=, =resize_handle=, =span_host=) and
+=status/= (=led_indicator=). The remaining absence is the *shell* proper —
+=app_shell= / =shell= — which nine of eleven apps hand-roll and the kit still
+does not provide. Do not infer the other four shapes are unaddressed without
+re-checking the kit tree; one of five has already been half-closed.
+
+* Two projects that are not applications
+
+- =ui-kit-private/example= (51 lib + 68 test files, 30,332 lines) — the
+  kit's gallery, with 12 pages under =lib/pages/= (about, appearance, clipboard,
+  contrast_lab, editor_shell, keymap, layout, org_editor, settings, status,
+  theme, widgets) and its own suite. A real harness.
+
+  *It is also the ancestor of =textloom=* — 34 of textloom's 67 lib files share its
+  filenames, 16 byte-identical, and textloom is larger in all 15 diverged files. So
+  the earlier statement that "its role transfers to =ui0=, promoted from demo to
+  oracle" rests on a false premise: =example/= is the *stale* side of the family's
+  largest fork. See census §5b and =a9e4bfea=; the =ui0= seed is now an open
+  decision.
+
+  This is also why the adoption ratio in Table 1 must not be read as a
+  duplication measure. textloom has the family's *highest* adoption (38/67) and the
+  family's *largest* fork simultaneously, because the fork is against
+  =example/=, which is not the kit.
+- =k8s-deploy-test-dashboard= — symlinked into the =flutter= workspace, target
+  empty. Unresolved: planned app or stale artifact (todo =802c68b9=). Counted in
+  neither table.
+
+* Source Verification Notes
+
+** Verified claims
+- All file and line counts: ✓ =find= / =wc -l= against the working trees,
+  2026-07-29.
+- Kit adoption ratios: ✓ =grep -rl "package:desktop_kit/" <app>/lib=.
+- Kit pins and state-management versions: ✓ read from each =pubspec.yaml=.
+- App purposes: ✓ quoted from each =pubspec.yaml= =description:= field, not
+  paraphrased from code.
+- =task-board= class-name collision: ✓ =comm -12= over class declarations in
+  each file pair; differing-line counts via =diff= of sorted files.
+- Kit first commit 2026-06-28 and the five pre-kit dates: ✓ =git log= per repo.
+- *Promotion direction task-board → kit:* ✓ kit commit =af177de= (2026-07-04),
+  =git log --diff-filter=A= on the three files, title "layout+status: promote
+  AdaptiveLayout/ResizeHandle/SpanHost/LedIndicator"; plus
+  =task-board/docs/desktop-kit-gap-evaluation.org= dated the same day specifying
+  it. Riverpod coupling in task-board's copy vs =required this.mode= in the
+  kit's: ✓ grep of both files.
+- =task-board= has no =desktop_kit= dependency: ✓ =grep desktop_kit
+  task-board/ui/pubspec.yaml= returns nothing; the one repo-wide hit is a table
+  row inside the gap-evaluation doc, not code.
+- word-bank declares its *own* =abstract class SettingsStore= +
+  =FileSettingsStore= at =settings_models.dart:318=; ✓ and it never imports
+  =desktop_kit_settings= (grep returns nothing). The =SettingsStore= mentions in
+  =autosave_store.dart= / =recents_store.dart= are doc comments referring to
+  word-bank's own class, not the kit's.
+
+** Corrections made
+- *Original claim:* task-board's three widgets are "independent reimplementation
+  of a known-good component". *Corrected to:* task-board is the **origin** of
+  those three kit components; they were promoted app→kit on 2026-07-04 and the
+  reciprocal adoption never ran. *Revealed by:* the pre-existing
+  =desktop-kit-gap-evaluation.org= and kit commit =af177de=. The corrected
+  reading inverts the lesson — the failure is a half-executed plan, not an
+  author who did not look.
+- *Original claim (carried in from an earlier session note):* word-bank
+  "bypasses the kit =SettingsStore=". *Status:* substantively confirmed, but the
+  wording was ambiguous — word-bank hand-rolls a same-named class rather than
+  importing and declining to use the kit's. Restated precisely above.
+
+** Estimated / bounded claims
+- "Files importing kit" is a *file-level* measure and is explicitly not a
+  measure of call-site depth — stated inline where used.
+- The differing-line counts come from =diff= of *sorted* files, which measures
+  set difference, not edit distance. Good for "are these the same code?",
+  wrong for "how big is the patch". Called out here so it is not later read as
+  a patch size.
+
+** Not verified
+- Support-binary transports in Table 1 are taken from pubspec descriptions and
+  directory names; the wire protocols were not exercised.
+- Whether =notekeep='s decommissioning is final (user-stated, not tracked in a
+  repo artifact).
+
+* Cross-References
+
+- Measured fork deltas: [[file:duplication-census.org]]
+- The consolidation design: [[file:framework-subsumption-design.org]]
+- Go-side design: [[file:../../go/docs/go-framework-design.org]]
+- Session trace: [[file:../../docs/sessions/2026-07-29-feat-go-framework-foundation.org]]
+- Governing rule (adopt a foundation module, never fork):
+  [[file:~/go/src/github.com/davidwalter0/ui-kit-private/docs/design/support-binary-module-kit.org]]
+- *Prior art — do not re-derive:*
+  [[file:~/go/src/github.com/davidwalter0/task-board/docs/desktop-kit-gap-evaluation.org]]
+  (2026-07-04) already carries a kit supply inventory, a task-board demand
+  inventory, a 13-row capability matrix with adopt/promote/keep verdicts, and an
+  executable adoption plan. Its Part B shipped as kit =af177de=; its Part A is
+  still open and is the =task-board= migration script.
+
+* Footnotes
+
+[fn:adoption] The adoption ratio is the migration progress metric: at the end
+of consolidation every non-decommissioned app should trend *up*, and a
+=task-board= row that stays at 0% means the pilot did not land.

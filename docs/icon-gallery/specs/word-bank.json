@@ -1,0 +1,31 @@
+{
+  "name": "word-bank",
+  "palette": {
+    "preset": "slate"
+  },
+  "motif": {
+    "color": "hero",
+    "opacity": 0.28,
+    "svg": "<path d=\"M 36 62 Q 84 44 126 62 L 126 176 Q 84 158 36 176 Z\" stroke=\"none\"/><path d=\"M 220 62 Q 172 44 130 62 L 130 176 Q 172 158 220 176 Z\" stroke=\"none\"/>"
+  },
+  "layers": [
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "語",
+      "height": 96,
+      "centerX": 128,
+      "y": 40,
+      "align": "top",
+      "fill": "hero"
+    },
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "wb",
+      "height": 48,
+      "centerX": 128,
+      "y": 226,
+      "align": "bottom",
+      "fill": "hero"
+    }
+  ]
+}

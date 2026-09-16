@@ -1,0 +1,58 @@
+:PROPERTIES:
+:ID:       frameworks-readme
+:CREATED:  [2026-07-29 Wed]
+:END:
+#+title: frameworks — shared Go and Flutter building blocks for desktop apps
+#+options: toc:nil
+
+* Status
+
+Foundational extraction complete: =ui/pkg/desktop_kit= (from
+=ui-kit-private=) and =go/pkg/installer= (from three self-extracting
+installers) both live here, each covered by its own check suite. The measured
+evidence base this extraction was built from is
+[[file:ui/docs/duplication-census.org]].
+
+* What this repo is
+
+Shared Go and Flutter building blocks for desktop apps: a desktop UI kit
+(=ui/pkg/desktop_kit=, extracted from =ui-kit-private=), a self-extracting
+installer, and unit/spec and packaging tooling (=go/pkg/installer=,
+=go/pkg/spec=, =go/pkg/iconspec=, and siblings) — pulled out of several
+sibling apps that had each been duplicating this code independently.
+
+Eleven Flutter apps share =ui-kit-private= to wildly differing degrees
+(38/67 files in textloom down to 12/77 in voicelab), and the apps that *predate*
+the kit — the kit was born 2026-06-28 — carry forks of code the kit later
+absorbed. Two files are byte-identical across repos; several more have drifted
+with the kit as a strict superset the app cannot reach.
+
+Three Go self-extracting installers are ~60% identical line-for-line.
+
+* Layout
+
+#+begin_example
+frameworks/
+├── ui/                       Dart / Flutter (pub workspace)
+│   ├── pkg/desktop_kit/      copied from ui-kit-private
+│   ├── pkg/app_kit/          the app-shell tier that does not exist today
+│   ├── cmd/ui0/              reference app — the framework's oracle
+│   └── docs/ tools/ scripts/
+└── go/                       module github.com/davidwalter0/frameworks/go
+    ├── pkg/installer/        first extraction
+    ├── cmd/ tools/
+    └── docs/ scripts/
+#+end_example
+
+* Migration contract
+
+*Copy first. Opt in per project. Verify. Only then retire the original.*
+
+No source repo is modified or deleted until the project consuming its
+replacement has been independently verified — so every phase aborts by simply
+not deleting the fork, and rollback is free by construction.
+
+=cmd/ui0= is an oracle, not a demo: an =app_kit= capability with no =ui0=
+surface is not done.
+
+* Footnotes

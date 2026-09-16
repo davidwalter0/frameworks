@@ -1,0 +1,44 @@
+{
+  "name": "voicelab",
+  "palette": {
+    "tileTop": "#1e293b",
+    "tileBottom": "#0f172a",
+    "border": "#334155",
+    "heroStops": [
+      {
+        "color": "#bae6fd"
+      },
+      {
+        "color": "#7dd3fc"
+      },
+      {
+        "color": "#2dd4bf"
+      }
+    ]
+  },
+  "motif": {
+    "color": "hero",
+    "opacity": 1.0,
+    "svg": "<polygon points=\"79.17,114.95 110.3,114.95 85.4,150.22\" stroke=\"none\"/><path d=\"M 74.05 26.14 H 127.87 A 26.0 26.0 0 0 1 153.87 52.14 V 95.17 A 26.0 26.0 0 0 1 127.87 121.17 H 74.05 A 26.0 26.0 0 0 1 48.05 95.17 V 52.14 A 26.0 26.0 0 0 1 74.05 26.14 Z\" stroke=\"none\"/><g fill=\"none\" stroke-width=\"9.54\" stroke-linecap=\"round\"><path d=\"M 161.51 59.34 A 19.92 19.92 0 0 1 161.51 87.97\"/><path d=\"M 174.21 46.23 A 38.18 38.18 0 0 1 174.21 101.17\"/><path d=\"M 186.83 33.03 A 56.44 56.44 0 0 1 186.83 114.29\"/></g>"
+  },
+  "layers": [
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "あ",
+      "height": 52,
+      "centerX": 101,
+      "y": 44,
+      "align": "top",
+      "fill": "#0f172a"
+    },
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "vl",
+      "height": 72,
+      "centerX": 128,
+      "y": 226,
+      "align": "bottom",
+      "fill": "hero"
+    }
+  ]
+}

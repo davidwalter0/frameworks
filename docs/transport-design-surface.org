@@ -1,0 +1,375 @@
+:PROPERTIES:
+:ID:       frameworks-transport-design-surface
+:END:
+#+title: Transport design surface — form, function, reuse, decoupling, standardization
+#+date: 2026-07-30
+
+* Session State
+:PROPERTIES:
+:LAST_UPDATED: 2026-07-30
+:END:
+
+** Status
+Design surface, not a census. Supersedes the reasoning in =8d112c91=, which
+answered a form question and missed the function dimension.
+
+** Completed
+- [X] The five axes separated, with the tension between them named
+- [X] Function taxonomy — what a channel must *do*, independent of encoding
+- [X] Function × transport matrix
+- [X] Tools by type and by current implementation
+- [X] Target surface
+
+** Next Steps
+- [ ] Confirm the bidi/callback requirement's shape for the lisp runtime (§7.1)
+- [ ] Decide the queue tier: adopt =flowq/pkg/waterworks= or design fresh (§6.4)
+
+* 1. The five axes are not one question
+
+I previously collapsed these and answered as if "which wire format" were the
+whole decision. It is one axis of five, and the axes conflict.
+
+| axis | the question it asks | failure when ignored |
+|------+----------------------+----------------------|
+| *FORM* | how are bytes encoded and framed? JSON / protobuf / D-Bus marshalling | wrong encoding for the payload; needless dependency |
+| *FUNCTION* | what must the channel *do*? call/response, streaming, pub-sub, discovery, activation, cross-app reach | a transport that cannot express the interaction, worked around forever |
+| *DRY REUSE* | how much code is shared across pairs? | N implementations of reconnect, N of backoff, N of health |
+| *DECOUPLING* | can the two ends evolve, deploy and version independently? | lockstep releases; silent drift |
+| *STANDARDIZATION* | how many ways of doing one thing? | cognitive load, no shared tooling, every new pair re-decides |
+
+** 1.1 The central tension, and it decides the whole design
+
+*Standardization and decoupling CONFLICT when you standardize on FORM.* One wire
+format everywhere means every consumer takes that dependency — a JSON-RPC-over-
+stdio sidecar dragging in protobuf, a mobile bridge dragging in a session bus.
+The census's own argument for package granularity is precisely that disjoint
+dependency profiles must not be forced on consumers that do not need them; the
+same logic applies to transports.
+
+*Standardization and decoupling ALIGN when you standardize on FUNCTION.*
+"Every client reconnects with the same backoff policy and reports health the
+same way" costs no shared dependency, because reconnect semantics are
+encoding-independent.
+
+*And DRY REUSE follows function, not form.* The measured evidence:
+
+| | shared | forked |
+|-+--------+--------|
+| Dart-side backend plumbing | *154 lines* (kit =host_process= seam) | *6,379 lines* across 7 apps |
+
+mountbridge 3,094 · voicelab 2,020 · task-board 570 · mail-sweep 384 ·
+alert-log 165 · ghk 109 · word-bank 37. Worst shared-to-forked ratio
+of any capability measured. Those 6,379 lines are *not* encoding — they are
+connect, reconnect, backoff, health, cancellation, lifecycle. A gomobile
+=MethodChannel= and a D-Bus proxy differ completely in form and have *identical*
+plumbing problems.
+
+*Conclusion that follows: standardize FUNCTION hard, let FORM vary where
+function demands it.*
+
+* 2. Function taxonomy — what a channel must actually do
+
+Form-independent. Every existing and planned pair maps onto these.
+
+| # | function | shape | who needs it |
+|---+----------+-------+--------------|
+| F1 | *call/response* | req → one reply | everything |
+| F2 | *server streaming* | req → N replies | voicelab render progress, mountbridge sync status, alert-log events |
+| F3 | *bidirectional + caller callback* | interleaved both ways; callee calls back into caller | *lisp compiler/runtime* (user-confirmed), debuggers, LSP-shaped tools |
+| F4 | *fire-and-forget notification* | no reply expected | progress ticks, log lines |
+| F5 | *pub/sub fan-out* | 1 producer → N independent consumers | desktop notifications, cluster events |
+| F6 | *durable queue / replay* | survives restart; consumer can rewind | job dispatch, event sourcing |
+| F7 | *cross-application reach* | a *different* app finds and calls you | D-Bus's actual value proposition |
+| F8 | *activation / discovery* | service starts on demand; is findable by name | systemd activation, D-Bus name ownership, mDNS |
+| F9 | *in-process fan-out* | goroutine → goroutine, no wire at all | hot-path decoupling |
+
+*F3 is now a hard requirement*, not a hypothetical — the lisp runtime needs
+caller callback and call/response interleaved. That eliminates any design built
+solely on request/response.
+
+*F7 is a FUNCTION, not a form.* This is what I missed. D-Bus is not "another
+encoding" — it is the only option here that lets an *unrelated* application
+discover and call a service, integrate with host services, and survive as a
+continuity point across process restarts. Nothing about JSON-RPC-over-stdio can
+substitute, at any encoding.
+
+* 3. Matrix — function × transport
+
+✓ native · ~ possible with convention/effort · ✗ not available
+
+| function | stdio JSON-RPC | gRPC | D-Bus | NATS/JetStream | MethodChannel | in-proc chan |
+|----------+----------------+------+-------+----------------+---------------+--------------|
+| F1 call/response | ✓ | ✓ | ✓ | ~ (req-reply) | ✓ | ✓ |
+| F2 server streaming | ~ (notifications) | *✓* | ~ (signals) | ✓ | ~ (EventChannel) | ✓ |
+| F3 *bidi + callback* | ~ (peer JSON-RPC, LSP does this) | *✓* | ✓ (both own names) | ~ | ✗ | ✓ |
+| F4 notification | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| F5 pub/sub fan-out | ✗ | ✗ | ~ (signals, bus-scoped) | *✓* | ✗ | ~ |
+| F6 durable/replay | ✗ | ✗ | ✗ | *✓ (JetStream)* | ✗ | ✗ |
+| F7 *cross-app reach* | ✗ | ~ (if you run a port) | *✓* | ✓ (if broker runs) | ✗ | ✗ |
+| F8 activation/discovery | ✗ | ✗ | *✓* | ~ | ✗ | ✗ |
+| F9 in-proc fan-out | ✗ | ✗ | ✗ | ✗ | ✗ | *✓* |
+| *dependency weight* | *none* | protobuf+grpc | libdbus/session bus | broker + client | Flutter-only | none |
+| *schema / drift detection* | ✗ hand-matched | *✓ .proto* | *✓ introspection* | ✗ | ✗ hand-matched | n/a (compiler) |
+| *platform reach* | all | all | *Linux only* | all | *mobile only* | in-proc |
+
+Two readings that matter:
+
+- *No single transport covers F1–F9.* Any "standardize on one" answer is wrong
+  on function grounds before cost is even considered.
+- *The three with schemas are gRPC, D-Bus and nothing else.* JSON-RPC's
+  contract is two hand-maintained lists — which is exactly how mail-sweep's 12
+  methods and ghk's method set can drift silently, and why the D-Bus pair is the
+  only one where drift is machine-detectable.
+
+* 4. Tools per type
+
+Grouped by transport, listing what would live at each tier.
+
+** 4.1 stdio JSON-RPC — the sidecar tier
+Existing: gatehub-kit, mail-sweep (12 methods + =scan/progress= + =$/cancelRequest=), textloom, notekeep.
+Needs: framing, id correlation, notification dispatch, cancellation, error model, peer-mode (for F3).
+
+** 4.2 gRPC — the schema+streaming tier
+Existing: netroute (=api/proto/lbmanager/v1/lbmanager.proto= → 2 Go + 4 Dart), voicelab (gRPC via the Google TTS SDK — a *client* of someone else's service, not a house contract).
+Needs: proto layout convention, generated-artifact policy, version/compat rules.
+
+** 4.3 D-Bus — the host-integration tier
+Existing: mountbridge (=org.mountbridge.Daemon1=, 29 methods + 6 signals, 27/29 + 6/6 paired), alert-log (consumes =org.freedesktop.Notifications=, incl. =BecomeMonitor= — a privileged mode).
+Needs: interface naming, introspection-as-contract, activation units, the Dart client (=dbus ^0.7.10=, one pubspec in the family).
+
+** 4.4 NATS / JetStream — the queue+stream tier *(already in use)*
+Existing: =flowq/pkg/waterworks= — =connect.go= 80, =broker.go= 98, =publisher.go= 129, =streams.go= 102 = *409 LOC*, on =nats.go v1.52.0=. And =fleet-sched= — =pkg/callbacks/deliver.go= 425, =pkg/jobmap/kv.go= 133 (NATS KV), =pkg/events/events.go= 55.
+Needs: subject naming, stream/consumer policy, at-least-once semantics, the decision in §6.4.
+
+** 4.5 MethodChannel / gomobile — the mobile tier
+Existing: voicelab (=MethodChannel('voicelab/backend')=, 18 methods 1:1, gomobile =.aar=), notekeep (=mobile/notekeep.go=).
+Note: *2 consumers* — satisfies the two-consumer rule, and rules out D-Bus for anything mobile-bound.
+
+** 4.6 In-process — the hot-path tier
+Existing, and *three separate implementations of one idea*:
+=fs-relay/pkg/channels= 132 (typed channels, documented drop-on-full to keep the FUSE hot path unblocked), =netroute/events/bus.go= 192 + =logwriter.go= 72, =fleet-sched/pkg/events/events.go= 55.
+
+* 5. Tools by current implementation
+
+| repo | F-functions used | transports | contract identifier |
+|------+------------------+------------+---------------------|
+| mountbridge | F1 F2 F7 F8 | D-Bus, subprocess, http | =org.mountbridge.Daemon1= — 29 methods, 6 signals |
+| netroute | F1 F2 F5 | gRPC, subprocess, http, avahi(subprocess) | =lbmanager.proto= |
+| gatehub-kit | F1 F4 | JSON-RPC, subprocess, http | MCP method set |
+| mail-sweep | F1 F4 | JSON-RPC/stdio, subprocess, http | 12 methods + =scan/progress= + =$/cancelRequest= |
+| voicelab | F1 F2 F4 | subprocess+JSON, MethodChannel, websocket, gRPC(client) | =VoicelabCli= facade; =voicelab/backend= 18 methods |
+| alert-log | F1 F4 F5 | D-Bus(consumer), websocket, http, subprocess | =org.freedesktop.Notifications=, =BecomeMonitor= |
+| task-board | F1 F4 | http, websocket | Feed + Notification routes only |
+| textloom | F1 F4 | JSON-RPC, websocket, subprocess | Anthy + org support |
+| notekeep | F1 | JSON-RPC, subprocess, gomobile | — |
+| word-bank | F1 | subprocess | lexicon binary argv |
+| fs-relay | F1 F9 | MCP, in-proc channels | =pkg/backend.Backend= (17 implementors) |
+| flowq | F5 F6 | NATS | =pkg/waterworks= |
+| fleet-sched | F5 F6 | NATS + KV | =pkg/callbacks= |
+
+* 5b. Parallelism — the axis the function taxonomy misses
+
+F1–F9 describe *interaction shape*. They say nothing about *concurrency*, and
+concurrency is where this family's real constraint lives.
+
+** 5b.1 The parallelism axes
+
+| # | axis | question |
+|---+------+----------|
+| P1 | *multiplexing* | can N requests be in flight on one connection? |
+| P2 | *head-of-line blocking* | does one slow or large message stall everything behind it? |
+| P3 | *backpressure* | what happens when the consumer is slower than the producer? |
+| P4 | *client decode parallelism* | on which thread/isolate is the payload deserialized? |
+| P5 | *server request parallelism* | goroutine-per-request, pool, or serialized? |
+| P6 | *ordering* | are replies ordered, and does the caller need them to be? |
+| P7 | *consumer fan-out* | can N workers share one work source? |
+
+** 5b.2 Transport comparison
+
+| axis | stdio JSON-RPC | gRPC (HTTP/2) | D-Bus | NATS | MethodChannel | subprocess-per-call |
+|------+----------------+---------------+-------+------+---------------+---------------------|
+| P1 multiplexing | ✓ *by id* | ✓ streams | ✓ serials | ✓ | ✓ | ✗ one call per process |
+| P2 head-of-line | *✗ SEVERE — one byte stream* | ✓ per-stream | ~ large msgs occupy socket | ✓ | ~ platform queue | n/a |
+| P3 backpressure | ✗ none | ✓ flow control | ✗ | ✓ credit/ack | ✗ | n/a |
+| P6 ordering | per-id, unordered overall | ordered per stream | ordered per sender | per subject | ordered | n/a |
+| P7 fan-out | ✗ | ✗ | ✗ | *✓ queue groups* | ✗ | ~ N processes |
+
+*P2 is the sleeper.* stdio is a single byte stream: a large response — a file
+listing, a render result, a lexicon dump — blocks every other message behind it
+on that pipe. Four consumers use JSON-RPC over stdio today. gRPC's per-stream
+multiplexing exists precisely to fix this, and it is the strongest *technical*
+argument for gRPC that has nothing to do with schemas.
+
+** 5b.3 The measured constraint is P4, and it dominates everything else
+
+| client | files using =Isolate.spawn= / =compute()= / =TransferableTypedData= | of |
+|--------+------------------------------------------------------------------+----|
+| mountbridge | *0* | 26 |
+| alert-log | *0* | 60 |
+| ghk_dashboard | *0* | 36 |
+| mail-sweep | *0* | 32 |
+| netroute_manager | *0* | 22 |
+| task-board | *0* | 39 |
+| *ui-kit-private* | *0* | *121* |
+| word-bank | 3 | 56 |
+| textloom | 2 | 75 |
+| voicelab | 1 | 77 |
+
+*6 of 544 Dart files.* So essentially every payload in this family is
+deserialized **on the UI isolate**.
+
+That inverts the naive transport argument. Dart's event loop is single-threaded
+per isolate: a large decode janks frames regardless of how well the wire
+multiplexes. *Adding transport-level parallelism buys nothing while the client
+processes serially on the thread that also paints.* gRPC's HTTP/2 multiplexing
+is real, and worth ~nothing to a client that then decodes on the UI isolate.
+
+The asymmetry is the point: *Go serves concurrency almost for free
+(goroutine-per-request); the Flutter client cannot consume it.* P5 is solved and
+P4 is not, so the bottleneck sits on the client side of every pair.
+
+Worth noting where it will bite hardest: mountbridge pairs a 1,635-line file-manager
+view with a 1,027-line D-Bus client and uses isolates in zero files — directory
+listings are exactly the payload that grows without bound.
+
+** 5b.4 Backpressure is effectively absent
+
+One file in the surveyed set handles it explicitly:
+=fs-relay/pkg/scheduler/runner.go=. =fs-relay/pkg/channels= is the other good
+citizen — it documents *drop-on-full to keep the FUSE hot path unblocked* as an
+explicit requirement (FR-020, NFR-014) rather than leaving it to chance.
+
+Everywhere else, an unbounded =StreamController= or an unbounded channel is the
+default, which converts a slow consumer into unbounded memory growth rather than
+into a signal.
+
+** 5b.5 What this adds to the design
+
+*Tier A (§6.1) gains three obligations it did not have:*
+
+1. *A concurrency policy is part of the plumbing contract*, not per-app. Max
+   in-flight requests, queue depth, and what happens on overflow — reject, drop,
+   or block — stated once.
+2. *Decode placement is a Tier-A decision.* The contract should make
+   off-isolate decode the default path for payloads above a threshold, so an app
+   gets it without knowing it needs it. Given 6 of 544 files, no app will do this
+   on its own.
+3. *Backpressure must be expressible.* A transport that cannot signal it (stdio,
+   D-Bus) needs the policy in the client; a transport that can (gRPC, NATS)
+   should have it wired through rather than ignored.
+
+*And it sharpens Tier B's routing (§6.2):* choose gRPC not only for schema and
+streaming but *when P2 matters* — when large payloads share a channel with
+latency-sensitive ones. That is a distinct reason, and for mountbridge-shaped
+workloads it may be the deciding one.
+
+*Not measured, and it should be before acting:* whether UI-isolate decode is
+actually causing jank anywhere today. The performance baseline measured test and
+build cost, never frame time. The 6-of-544 figure is a *risk*, not an observed
+defect — do not present it as one.
+
+* 6. The target design surface
+
+Four tiers. The rule is: *one shared plumbing layer, several forms, chosen by
+function.*
+
+** 6.1 Tier A — the plumbing contract (STANDARDIZE HARD, form-independent)
+
+This is where the 6,379 forked lines go. A single Dart-side interface plus a
+single Go-side one, expressing:
+connect · reconnect with policy · backoff · health/liveness · graceful
+degradation · cancellation · request correlation · lifecycle.
+
+*Form-independent by construction* — a =MethodChannel= adapter, a D-Bus proxy
+adapter and a stdio JSON-RPC adapter all satisfy the same interface. This is the
+only tier where standardization and decoupling align, and it is where essentially
+all the measured duplication lives.
+
+Reuse note: =backoff= already exists as a module in the namespace, and
+=ServiceHealthController= + =BackoffPolicy= were proposed in the app_kit design —
+they belong *here*, not in an app-shell package.
+
+** 6.2 Tier B — form, chosen by function
+
+| if the pair needs… | use | because |
+|--------------------+-----+---------|
+| F1/F4 only, private parent↔child | *stdio JSON-RPC* | zero dependencies; 4 consumers already; debuggable |
+| F3 bidi + caller callback | *stdio JSON-RPC in peer mode*, or *gRPC bidi* if schema also wanted | LSP proves peer-mode JSON-RPC does F3 |
+| F2 heavy streaming + schema | *gRPC* | streaming is first-class; contract is one artifact |
+| F7/F8 cross-app or host integration | *D-Bus* | the only option that provides them at all |
+| mobile | *MethodChannel/gomobile* | the only option available |
+
+** 6.3 Tier C — the queue/stream tier (currently unstandardized)
+
+*Answering the question directly: yes, D-Bus for some and NATS for others — they
+serve disjoint functions and are not alternatives.*
+
+| | D-Bus | NATS/JetStream |
+|-+-------+----------------|
+| scope | one host, session/system bus | network, multi-host |
+| purpose | *cross-application RPC + host service integration* (F7 F8) | *durable streams, fan-out, replay* (F5 F6) |
+| audience | other apps on this desktop | other services in a cluster |
+| lifetime | request-scoped; signals are ephemeral | durable; consumers rewind |
+| existing use | mountbridge, alert-log | flowq, fleet-sched |
+
+They overlap only at F5, and even there differently: D-Bus signals are ephemeral
+and bus-scoped; JetStream is durable and replayable. *Use D-Bus for desktop
+integration; use NATS where work must survive a restart or fan out across hosts.*
+
+** 6.4 Tier D — in-process fan-out
+
+Three implementations of one idea today (§4.6). =fs-relay/pkg/channels= is the best
+starting point: it is typed, documents its *drop-on-full to keep the hot path
+unblocked* policy as an explicit requirement, and is the smallest. This is a
+straightforward 3-consumer consolidation, independent of every other decision
+here.
+
+* 7. What is still open
+
+** 7.1 The shape of F3 for the lisp runtime
+Confirmed as needed. Not yet specified: does the runtime need the *callee* to
+originate calls (true peer mode, as LSP does), or only long-lived server
+streaming with client-side cancellation? Peer-mode JSON-RPC covers the first
+without a protobuf dependency; gRPC bidi covers it with schema. *This is the
+single question that most changes tier B's default.*
+
+** 7.2 Adopt =flowq/pkg/waterworks= or design fresh
+409 LOC, on current =nats.go=, with connect/broker/publisher/streams already
+factored. Two NATS consumers exist. Per the standing rule this is prior art to
+*evaluate*, not a verdict — but it is the obvious first read.
+
+** 7.3 Schema-or-not for JSON-RPC
+Its lack of a schema is its main weakness and the main reason drift is possible.
+Options: accept it; generate both sides from a small IDL; or use gRPC where drift
+would be expensive. Interacts directly with the codegen decision (=e0d1d35e=).
+
+* Source Verification Notes
+
+** Verified
+- The 154-vs-6,379 plumbing ratio and its per-repo breakdown — census.
+- All contract identifiers (=org.mountbridge.Daemon1= 29+6, mail-sweep 12+2,
+  =voicelab/backend= 18) — ast-backed re-census.
+- NATS in use: =flowq/pkg/waterworks= 409 LOC and =fleet-sched=, both on
+  =nats.go v1.52.0= — go.mod + file measurement.
+- Three in-process buses — =fs-relay/pkg/channels= 132, =netroute/events=
+  264, =fleet-sched/pkg/events= 55.
+- No rabbitmq / kafka / nsq / watermill anywhere; redis only in task-board (other
+  hits are vendored Google samples under =go-epub-translator=).
+
+** Judgement, not measurement
+- The F1–F9 taxonomy is mine; it is a modelling choice, not a discovered fact.
+- Every ✓/~/✗ in §3 is a capability judgement. The ~ marks are where a transport
+  *can* do it with convention — reasonable people would grade some differently.
+- Tier B's routing table and the recommendation to standardize function over
+  form.
+
+** Not verified
+- That a single Tier-A interface can actually absorb all five transports without
+  leaking. It is the design's central bet and it is untested.
+- Whether =flowq/pkg/waterworks= is any good — noted as prior art, not read.
+- gRPC-vs-JSON-RPC cost in this family: nothing was benchmarked.
+
+* Cross-References
+- Supersedes the reasoning in todo =8d112c91=
+- =f0e6927d= Go/Dart pairing · =0606f5e2= Dart settings · =e0d1d35e= codegen ·
+  =4df19bd4= fs-relay =pkg/backend= (17 implementors) · =f57991e5= packaging

@@ -1,0 +1,22 @@
+{
+  "name": "ghk",
+  "palette": {
+    "preset": "slate"
+  },
+  "motif": {
+    "color": "hero",
+    "opacity": 0.9,
+    "svg": "<g fill=\"none\" stroke-width=\"7\" stroke-linecap=\"round\"><path d=\"M 128 96 L 64 56\"/><path d=\"M 128 96 L 192 56\"/><path d=\"M 128 96 L 56 128\"/><path d=\"M 128 96 L 200 128\"/><path d=\"M 128 96 L 96 152\"/><path d=\"M 128 96 L 160 152\"/></g><circle cx=\"128\" cy=\"96\" r=\"20\" stroke=\"none\"/><g stroke=\"none\"><circle cx=\"64\" cy=\"56\" r=\"10\"/><circle cx=\"192\" cy=\"56\" r=\"10\"/><circle cx=\"56\" cy=\"128\" r=\"10\"/><circle cx=\"200\" cy=\"128\" r=\"10\"/><circle cx=\"96\" cy=\"152\" r=\"10\"/><circle cx=\"160\" cy=\"152\" r=\"10\"/></g>"
+  },
+  "layers": [
+    {
+      "font": "../fonts/KleeOne-SemiBold.ttf",
+      "text": "ghk",
+      "height": 56,
+      "centerX": 128,
+      "y": 226,
+      "align": "bottom",
+      "fill": "hero"
+    }
+  ]
+}
